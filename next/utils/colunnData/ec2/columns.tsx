@@ -5,6 +5,7 @@ import { ClockFadingIcon } from "lucide-react";
 import sortByInstanceType from "@/utils/sortByInstanceType";
 import { regex, makeCellWithRegexSorter, expr } from "../shared";
 import exprCompiler from "@/utils/expr";
+import { instanceDetailHref } from "@/utils/deploymentPaths";
 
 interface Storage {
     devices: number;
@@ -248,7 +249,7 @@ export const columnsGen = (
             return (
                 <RegionLinkPreloader
                     onClick={(e) => e.stopPropagation()}
-                    href={`/aws/ec2/${value}`}
+                    href={instanceDetailHref(`/aws/ec2/${value}`)}
                 >
                     {value}
                 </RegionLinkPreloader>

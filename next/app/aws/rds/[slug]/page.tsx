@@ -44,9 +44,10 @@ async function getData() {
 
 export async function generateStaticParams() {
     const { instances } = await getData();
-    return instances.map((instance) => ({
+    const params = instances.map((instance) => ({
         slug: instance.instance_type,
     }));
+    return process.env.PAGES_LITE_BUILD === "1" ? params.slice(0, 1) : params;
 }
 
 async function handleParams(params: Promise<{ slug: string }>) {

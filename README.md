@@ -48,6 +48,21 @@ price calculator instead of storing region- and account-dependent prices. See
 [the China cloud catalog documentation](./docs/china-cloud-catalogs.md) for the
 data sources and update process.
 
+### Fork GitHub Pages deployment
+
+This fork publishes a Pages build through
+[`pages.yml`](./.github/workflows/pages.yml). It runs after changes to `main`,
+can be started manually, and runs every day at 02:23 Asia/Shanghai. Each build
+downloads Vantage's current production data package before compiling the site,
+so the AWS, Azure, and GCP comparison tables refresh without cloud credentials.
+The four curated China cloud catalogs remain source-controlled and are updated
+through normal code changes.
+
+GitHub Pages limits a published site to 1 GB, while the full export with every
+single-instance detail page is larger than that. The Pages workflow therefore
+keeps the comparison tables and China cloud pages, and sends single-instance
+detail links to the canonical Vantage site. Normal full builds are unchanged.
+
 **AWS:** Ensure your IAM user has at least the following permissions:
 
 ```json

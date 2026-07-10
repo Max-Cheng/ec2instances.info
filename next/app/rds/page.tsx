@@ -6,6 +6,7 @@ import Head from "next/head";
 import type { Metadata } from "next";
 import loadAdvertData from "@/utils/loadAdvertData";
 import loadCurrencies from "@/utils/loadCurrencies";
+import { withBasePath } from "@/utils/deploymentPaths";
 
 export const metadata: Metadata = {
     title: "Amazon RDS Instance Comparison",
@@ -36,7 +37,9 @@ export default async function RDS() {
             <Head>
                 <link
                     rel="preload"
-                    href={`/remaining-rds-instances.msgpack.xz?cache=${instancesHash}`}
+                    href={withBasePath(
+                        `/remaining-rds-instances.msgpack.xz?cache=${instancesHash}`,
+                    )}
                     as="fetch"
                     fetchPriority="high"
                 />
@@ -46,7 +49,9 @@ export default async function RDS() {
                 instanceCount={instanceCount}
                 regions={regions}
                 compressedInstances={compressedInstances}
-                compressedDataPathTemplate={`/remaining-rds-instances.msgpack.xz?cache=${instancesHash}`}
+                compressedDataPathTemplate={withBasePath(
+                    `/remaining-rds-instances.msgpack.xz?cache=${instancesHash}`,
+                )}
                 columnAtomKey="rds"
                 marketingData={marketingData}
                 savingsPlanSupported={["yrTerm1Savings.noUpfront"]}

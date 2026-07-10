@@ -10,6 +10,7 @@ import {
 } from "./shared";
 import { ColumnDef } from "@tanstack/react-table";
 import RegionLinkPreloader from "@/components/RegionLinkPreloader";
+import { instanceDetailHref } from "@/utils/deploymentPaths";
 import sortByInstanceType from "../sortByInstanceType";
 
 type RedshiftPricing = {
@@ -164,7 +165,7 @@ export const columnsGen = (
             return (
                 <RegionLinkPreloader
                     onClick={(e) => e.stopPropagation()}
-                    href={`/aws/redshift/${value}`}
+                    href={instanceDetailHref(`/aws/redshift/${value}`)}
                 >
                     {value}
                 </RegionLinkPreloader>

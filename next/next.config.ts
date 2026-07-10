@@ -1,15 +1,24 @@
 import { withSentryConfig } from "@sentry/nextjs";
 import type { NextConfig } from "next";
 
+const basePath = process.env.NEXT_PUBLIC_BASE_PATH || "";
+if (basePath && (!basePath.startsWith("/") || basePath.endsWith("/"))) {
+    throw new Error(
+        "NEXT_PUBLIC_BASE_PATH must start with / and must not end with /",
+    );
+}
+
 let nextConfig: NextConfig = {
     output: "export",
+    basePath,
+    trailingSlash: process.env.PAGES_LITE_BUILD === "1",
     typescript: {
         ignoreBuildErrors: true,
     },
     turbopack: {
         root: __dirname,
     },
-    productionBrowserSourceMaps: true,
+    productionBrowserSourceMaps: process.env.PAGES_LITE_BUILD !== "1",
 };
 
 if (process.env.NEXT_PUBLIC_SENTRY_DSN) {

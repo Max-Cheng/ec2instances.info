@@ -7,6 +7,7 @@ import {
 } from "./shared";
 import { EC2Instance, PricingUnit, CostDuration } from "@/types";
 import RegionLinkPreloader from "@/components/RegionLinkPreloader";
+import { instanceDetailHref } from "@/utils/deploymentPaths";
 import sortByInstanceType from "../sortByInstanceType";
 import { getPricingSorter } from "./ec2/columns";
 
@@ -93,7 +94,7 @@ export const columnsGen = (
             return (
                 <RegionLinkPreloader
                     onClick={(e) => e.stopPropagation()}
-                    href={`/aws/elasticache/${value}`}
+                    href={instanceDetailHref(`/aws/elasticache/${value}`)}
                 >
                     {value}
                 </RegionLinkPreloader>

@@ -7,6 +7,7 @@ import { PIPELINE_SIZE } from "@/utils/handleCompressedFile";
 import type { Metadata } from "next";
 import loadAdvertData from "@/utils/loadAdvertData";
 import loadCurrencies from "@/utils/loadCurrencies";
+import { withBasePath } from "@/utils/deploymentPaths";
 
 export const metadata: Metadata = {
     title: "Amazon EC2 Instance Comparison",
@@ -37,7 +38,9 @@ export default async function Home() {
                     <link
                         key={i}
                         rel="preload"
-                        href={`/remaining-instances-p${i}.msgpack.xz?cache=${instancesHash}`}
+                        href={withBasePath(
+                            `/remaining-instances-p${i}.msgpack.xz?cache=${instancesHash}`,
+                        )}
                         as="fetch"
                         fetchPriority="high"
                     />
@@ -49,7 +52,9 @@ export default async function Home() {
                 instanceCount={instanceCount}
                 regions={regions}
                 compressedInstances={compressedInstances}
-                compressedDataPathTemplate={`/remaining-instances-p{}.msgpack.xz?cache=${instancesHash}`}
+                compressedDataPathTemplate={withBasePath(
+                    `/remaining-instances-p{}.msgpack.xz?cache=${instancesHash}`,
+                )}
                 columnAtomKey="ec2"
                 savingsPlanSupported={[
                     "yrTerm1Savings.noUpfront",

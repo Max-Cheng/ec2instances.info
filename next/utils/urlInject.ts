@@ -19,6 +19,7 @@ export function urlInject(
         throw new Error("NEXT_PUBLIC_URL is not set");
     }
     const url = new URL(e);
+    const basePath = url.pathname.replace(/\/$/, "");
 
     // Return the string with the URL's injected
     const chunks = [strings[0]];
@@ -27,7 +28,7 @@ export function urlInject(
         if (p instanceof Raw) {
             chunks.push(p.s, strings[i + 1]);
         } else {
-            url.pathname = p;
+            url.pathname = `${basePath}${p}`;
             chunks.push(url.toString(), strings[i + 1]);
         }
     }

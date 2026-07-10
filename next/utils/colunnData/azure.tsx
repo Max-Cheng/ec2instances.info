@@ -9,6 +9,7 @@ import {
 import { CostDuration } from "@/types";
 import RegionLinkPreloader from "@/components/RegionLinkPreloader";
 import exprCompiler from "@/utils/expr";
+import { instanceDetailHref } from "@/utils/deploymentPaths";
 
 export interface AzurePricing {
     [region: string]: {
@@ -290,7 +291,7 @@ export const columnsGen = (
                 return (
                     <RegionLinkPreloader
                         onClick={(e) => e.stopPropagation()}
-                        href={`/azure/vm/${value}`}
+                        href={instanceDetailHref(`/azure/vm/${value}`)}
                     >
                         {info.row.original.pretty_name}
                     </RegionLinkPreloader>

@@ -7,6 +7,7 @@ import {
 } from "./shared";
 import { ColumnDef } from "@tanstack/react-table";
 import RegionLinkPreloader from "@/components/RegionLinkPreloader";
+import { instanceDetailHref } from "@/utils/deploymentPaths";
 import { getPricingSorter } from "./ec2/columns";
 import sortByInstanceType from "../sortByInstanceType";
 
@@ -181,7 +182,7 @@ export const columnsGen = (
             return (
                 <RegionLinkPreloader
                     onClick={(e) => e.stopPropagation()}
-                    href={`/aws/rds/${value}`}
+                    href={instanceDetailHref(`/aws/rds/${value}`)}
                 >
                     {value}
                 </RegionLinkPreloader>

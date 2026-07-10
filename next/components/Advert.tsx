@@ -8,6 +8,7 @@ import {
 } from "@/schemas/marketing";
 import { useEffect, useState } from "react";
 import { MARKETING_JSON_URL } from "./advertUrl";
+import { withBasePath } from "@/utils/deploymentPaths";
 import { abGroup, browserBlockingLocalStorage } from "@/utils/abGroup";
 
 const style = {
@@ -156,7 +157,7 @@ export default function Advert({
             <div className="h-[2.5em]" style={style}>
                 <div className="flex items-center justify-center h-full">
                     <img
-                        src="/vantage-logo-icon-banner.svg"
+                        src={withBasePath("/vantage-logo-icon-banner.svg")}
                         aria-hidden="true"
                         className="h-4 mr-1.5"
                     />

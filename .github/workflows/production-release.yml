@@ -9,6 +9,7 @@ on:
 
 jobs:
     build:
+        if: github.repository == 'vantage-sh/ec2instances.info'
         name: Build and Deploy to Production
         runs-on: ubuntu-22.04-arm
         steps:

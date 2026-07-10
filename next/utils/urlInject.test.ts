@@ -16,3 +16,13 @@ test("does not throw if NEXT_PUBLIC_URL is set", () => {
     expect(scenario()).toEqual("https://theonion.com/test testing /pos");
     process.env.NEXT_PUBLIC_URL = originalNextPublicUrl;
 });
+
+test("preserves a project site base path", () => {
+    const originalNextPublicUrl = process.env.NEXT_PUBLIC_URL;
+    process.env.NEXT_PUBLIC_URL =
+        "https://max-cheng.github.io/ec2instances.info/";
+    expect(scenario()).toEqual(
+        "https://max-cheng.github.io/ec2instances.info/test testing /pos",
+    );
+    process.env.NEXT_PUBLIC_URL = originalNextPublicUrl;
+});

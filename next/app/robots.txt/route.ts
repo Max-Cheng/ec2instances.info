@@ -4,7 +4,10 @@ function urlGen(path: string) {
     if (!process.env.NEXT_PUBLIC_URL) {
         throw new Error("NEXT_PUBLIC_URL is not set");
     }
-    return new URL(path, process.env.NEXT_PUBLIC_URL).toString();
+    const url = new URL(process.env.NEXT_PUBLIC_URL);
+    const basePath = url.pathname.replace(/\/$/, "");
+    url.pathname = `${basePath}${path}`;
+    return url.toString();
 }
 
 export async function GET() {

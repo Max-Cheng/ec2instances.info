@@ -9,6 +9,7 @@ import {
 } from "./shared";
 import { ColumnDef } from "@tanstack/react-table";
 import RegionLinkPreloader from "@/components/RegionLinkPreloader";
+import { instanceDetailHref } from "@/utils/deploymentPaths";
 import sortByInstanceType from "../sortByInstanceType";
 
 type OpenSearchPricing = {
@@ -154,7 +155,7 @@ export const columnsGen = (
             return (
                 <RegionLinkPreloader
                     onClick={(e) => e.stopPropagation()}
-                    href={`/aws/opensearch/${value}`}
+                    href={instanceDetailHref(`/aws/opensearch/${value}`)}
                 >
                     {value}
                 </RegionLinkPreloader>

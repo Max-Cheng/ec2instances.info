@@ -9,6 +9,7 @@ import {
 import { CostDuration } from "@/types";
 import RegionLinkPreloader from "@/components/RegionLinkPreloader";
 import exprCompiler from "@/utils/expr";
+import { instanceDetailHref } from "@/utils/deploymentPaths";
 
 export interface GCPPricing {
     [region: string]: {
@@ -269,7 +270,7 @@ export const columnsGen = (
                 return (
                     <RegionLinkPreloader
                         onClick={(e) => e.stopPropagation()}
-                        href={`/gcp/${value}`}
+                        href={instanceDetailHref(`/gcp/${value}`)}
                     >
                         {info.row.original.instance_type}
                     </RegionLinkPreloader>

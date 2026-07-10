@@ -15,6 +15,18 @@ export async function GET() {
         <loc>${"/gcp"}</loc>
     </url>
     <url>
+        <loc>${"/alibaba"}</loc>
+    </url>
+    <url>
+        <loc>${"/tencent"}</loc>
+    </url>
+    <url>
+        <loc>${"/volcengine"}</loc>
+    </url>
+    <url>
+        <loc>${"/huawei"}</loc>
+    </url>
+    <url>
         <loc>${"/rds"}</loc>
     </url>
     <url>

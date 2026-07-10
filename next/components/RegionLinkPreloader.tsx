@@ -2,6 +2,7 @@ import { translationToolDetected } from "@/state";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef } from "react";
+import { rawAnchorHref } from "@/utils/deploymentPaths";
 
 const linksMapping: Set<{
     readonly y: number;
@@ -53,6 +54,7 @@ export default ({
     href: string;
 }) => {
     const usesTranslationTool = translationToolDetected.use();
+    const isExternal = /^https?:\/\//.test(props.href);
     let router: ReturnType<typeof useRouter> | null = null;
     try {
         router = useRouter();
@@ -64,7 +66,7 @@ export default ({
 
     useEffect(() => {
         // If the link is not prefetched, we don't need to do anything.
-        if (!prefetch || !internalRef.current) return;
+        if (!prefetch || !internalRef.current || isExternal) return;
 
         // Get the element and then find its position in the DOM.
         const element = internalRef.current;
@@ -109,10 +111,10 @@ export default ({
                 clearTimeout(preloadTimeout);
             }
         };
-    }, [internalRef.current, prefetch, router, linksMapping]);
+    }, [internalRef.current, prefetch, router, linksMapping, isExternal]);
 
-    if (usesTranslationTool) {
-        return <a {...props} />;
+    if (usesTranslationTool || isExternal) {
+        return <a {...props} href={rawAnchorHref(props.href)} />;
     }
 
     if (!prefetch) {

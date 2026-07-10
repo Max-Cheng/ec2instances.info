@@ -41,6 +41,28 @@ const navItems = [
         label: "GCP",
         href: "/gcp",
     },
+    {
+        label: "China Clouds",
+        href: "/alibaba",
+        children: [
+            {
+                label: "Alibaba Cloud",
+                href: "/alibaba",
+            },
+            {
+                label: "Tencent Cloud",
+                href: "/tencent",
+            },
+            {
+                label: "Volcengine",
+                href: "/volcengine",
+            },
+            {
+                label: "Huawei Cloud",
+                href: "/huawei",
+            },
+        ],
+    },
 ];
 
 function TranslationToolDetector({

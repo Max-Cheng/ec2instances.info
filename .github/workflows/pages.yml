@@ -1,0 +1,100 @@
+name: Daily GitHub Pages
+
+on:
+    push:
+        branches:
+            - main
+    schedule:
+        # 02:23 Asia/Shanghai (UTC+8). Avoid the busy top of the hour.
+        - cron: "23 18 * * *"
+    workflow_dispatch:
+
+concurrency:
+    group: github-pages
+    cancel-in-progress: false
+
+permissions:
+    contents: read
+    pages: write
+    id-token: write
+
+jobs:
+    build:
+        name: Build daily Pages artifact
+        runs-on: ubuntu-24.04
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Configure GitHub Pages
+              id: pages
+              uses: actions/configure-pages@v5
+
+            - name: Download current production instance data
+              run: |
+                  curl --fail --location --retry 5 --retry-all-errors \
+                    "https://instances.vantage.sh/www_pre_build.tar.gz?run=${GITHUB_RUN_ID}" \
+                    --output /tmp/www_pre_build.tar.gz
+                  sha256sum /tmp/www_pre_build.tar.gz
+                  tar -tzf /tmp/www_pre_build.tar.gz > /tmp/www_entries.txt
+                  if grep -Ev '^www(/|$)' /tmp/www_entries.txt | grep -q .; then
+                    echo "Archive contains a path outside www/" >&2
+                    exit 1
+                  fi
+                  if grep -Eq '(^|/)\.\.(/|$)|^/' /tmp/www_entries.txt; then
+                    echo "Archive contains an unsafe path" >&2
+                    exit 1
+                  fi
+                  tar -xzf /tmp/www_pre_build.tar.gz
+                  test -s www/instances.json
+                  test -s www/rds/instances.json
+                  test -s www/cache/instances.json
+                  test -s www/opensearch/instances.json
+                  test -s www/redshift/instances.json
+                  test -s www/azure/instances.json
+                  test -s www/gcp/instances.json
+
+            - uses: actions/setup-node@v4
+              with:
+                  node-version-file: next/.nvmrc
+                  cache: npm
+                  cache-dependency-path: next/package-lock.json
+
+            - name: Install and verify
+              working-directory: next
+              run: |
+                  npm ci
+                  npm run init
+                  npm run check-types
+                  npm run test -- --run
+
+            - name: Build Pages site
+              working-directory: next
+              env:
+                  NEXT_PUBLIC_URL: ${{ steps.pages.outputs.base_url }}/
+                  NEXT_PUBLIC_BASE_PATH: ${{ steps.pages.outputs.base_path }}
+                  NEXT_PUBLIC_INSTANCE_DETAIL_ORIGIN: https://instances.vantage.sh
+                  NEXT_PUBLIC_REMOVE_ADVERTS: "1"
+                  PAGES_LITE_BUILD: "1"
+              run: |
+                  npm run build:next
+                  touch out/.nojekyll
+
+                  artifact_kib=$(du -sk out | cut -f1)
+                  test "$artifact_kib" -lt 921600
+
+            - name: Upload Pages artifact
+              uses: actions/upload-pages-artifact@v4
+              with:
+                  path: next/out
+
+    deploy:
+        name: Deploy to GitHub Pages
+        needs: build
+        runs-on: ubuntu-24.04
+        environment:
+            name: github-pages
+            url: ${{ steps.deployment.outputs.page_url }}
+        steps:
+            - name: Deploy
+              id: deployment
+              uses: actions/deploy-pages@v4

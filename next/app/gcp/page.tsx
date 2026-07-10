@@ -8,6 +8,7 @@ import type { Metadata } from "next";
 import { Region } from "@/types";
 import loadAdvertData from "@/utils/loadAdvertData";
 import loadCurrencies from "@/utils/loadCurrencies";
+import { withBasePath } from "@/utils/deploymentPaths";
 
 export const metadata: Metadata = {
     title: "GCP Compute Engine Comparison",
@@ -41,7 +42,9 @@ export default async function GCP() {
                     <link
                         key={i}
                         rel="preload"
-                        href={`/remaining-gcp-instances-p${i}.msgpack.xz?cache=${instancesHash}`}
+                        href={withBasePath(
+                            `/remaining-gcp-instances-p${i}.msgpack.xz?cache=${instancesHash}`,
+                        )}
                         as="fetch"
                         fetchPriority="high"
                     />
@@ -51,7 +54,9 @@ export default async function GCP() {
                 currencies={currencies}
                 instanceCount={instanceCount}
                 regions={regions.main}
-                compressedDataPathTemplate={`/remaining-gcp-instances-p{}.msgpack.xz?cache=${instancesHash}`}
+                compressedDataPathTemplate={withBasePath(
+                    `/remaining-gcp-instances-p{}.msgpack.xz?cache=${instancesHash}`,
+                )}
                 compressedInstances={compressedInstances}
                 marketingData={marketingData}
             />

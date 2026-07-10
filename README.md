@@ -41,6 +41,13 @@ Make sure your pull requests target `develop` since this is our staging. When it
 
 The scraper is written in Go and fetches data from AWS, Azure, and GCP APIs. You'll need credentials for each provider.
 
+The site also includes curated comparison pages for Alibaba Cloud ECS, Tencent
+Cloud CVM, Volcengine ECS, and Huawei Cloud ECS. These catalogs cover
+representative documented instance families and link to each provider's live
+price calculator instead of storing region- and account-dependent prices. See
+[the China cloud catalog documentation](./docs/china-cloud-catalogs.md) for the
+data sources and update process.
+
 **AWS:** Ensure your IAM user has at least the following permissions:
 
 ```json

@@ -4,6 +4,7 @@ import TopNav from "./TopNav";
 import { RenderResult } from "@testing-library/react";
 
 const AWS_PATHS = ["/", "/rds", "/cache", "/redshift", "/opensearch"];
+const CHINA_CLOUD_PATHS = ["/alibaba", "/tencent", "/volcengine", "/huawei"];
 
 function runSelectedTest(pathLitUp: string) {
     return (component: RenderResult) => {
@@ -54,6 +55,31 @@ function runSelectedTest(pathLitUp: string) {
                 label: "GCP",
                 href: "/gcp",
                 ariaCurrent: pathLitUp === "/gcp",
+            },
+            {
+                label: "China Clouds",
+                href: "/alibaba",
+                ariaCurrent: CHINA_CLOUD_PATHS.includes(pathLitUp),
+            },
+            {
+                label: "Alibaba Cloud",
+                href: "/alibaba",
+                ariaCurrent: pathLitUp === "/alibaba",
+            },
+            {
+                label: "Tencent Cloud",
+                href: "/tencent",
+                ariaCurrent: pathLitUp === "/tencent",
+            },
+            {
+                label: "Volcengine",
+                href: "/volcengine",
+                ariaCurrent: pathLitUp === "/volcengine",
+            },
+            {
+                label: "Huawei Cloud",
+                href: "/huawei",
+                ariaCurrent: pathLitUp === "/huawei",
             },
         ];
         expect(formatted).toEqual(expected);
@@ -234,6 +260,19 @@ componentTests(
             },
             test: runSelectedTest("/gcp"),
         },
+
+        // China clouds
+
+        ...CHINA_CLOUD_PATHS.map((path) => ({
+            name: `${path} lights up its China cloud navigation item`,
+            props: {},
+            patch: {
+                before: () => {
+                    mockPath = path;
+                },
+            },
+            test: runSelectedTest(path),
+        })),
     ],
     TopNav,
 );

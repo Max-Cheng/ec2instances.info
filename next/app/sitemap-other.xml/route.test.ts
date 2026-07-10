@@ -9,4 +9,8 @@ nextSitemapTest(GET, [
     "/opensearch",
     "/redshift",
     "/gcp",
+    "/alibaba",
+    "/tencent",
+    "/volcengine",
+    "/huawei",
 ]);

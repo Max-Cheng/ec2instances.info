@@ -15,6 +15,8 @@ from scripts.china_cloud.common import (
 
 
 BOOTSTRAP_REGION = "cn-beijing"
+CONNECT_TIMEOUT_SECONDS = 5
+READ_TIMEOUT_SECONDS = 20
 SOURCE_URL = (
     "https://api.volcengine.com/api-docs/view?"
     "action=DescribeInstanceTypes&serviceCode=ecs&version=2020-04-01"
@@ -44,6 +46,9 @@ def _client(
     configuration.sk = secret_key
     configuration.region = region
     configuration.debug = False
+    configuration.connect_timeout = CONNECT_TIMEOUT_SECONDS
+    configuration.read_timeout = READ_TIMEOUT_SECONDS
+    configuration.auto_retry = False
     return ecs.ECSApi(core.ApiClient(configuration))
 
 

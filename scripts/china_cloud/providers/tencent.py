@@ -9,6 +9,7 @@ from scripts.china_cloud.common import integer, nonempty, number, provider_resul
 
 
 SOURCE_URL = "https://cloud.tencent.com/document/product/213/15749"
+REQUEST_TIMEOUT_SECONDS = 20
 
 
 def _client_profile(endpoint: str) -> Any:
@@ -19,7 +20,7 @@ def _client_profile(endpoint: str) -> Any:
         protocol="https",
         endpoint=endpoint,
         reqMethod="POST",
-        reqTimeout=60,
+        reqTimeout=REQUEST_TIMEOUT_SECONDS,
     )
     client_profile = ClientProfile()
     client_profile.httpProfile = http_profile

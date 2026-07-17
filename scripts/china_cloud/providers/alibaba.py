@@ -13,6 +13,8 @@ SOURCE_URL = (
     "api-ecs-2014-05-26-describeinstancetypes"
 )
 BOOTSTRAP_REGION = "cn-hangzhou"
+CONNECT_TIMEOUT_SECONDS = 5
+READ_TIMEOUT_SECONDS = 20
 
 
 def _make_client(access_key_id: str, access_key_secret: str, region_id: str) -> Any:
@@ -23,10 +25,10 @@ def _make_client(access_key_id: str, access_key_secret: str, region_id: str) -> 
         access_key_secret,
         region_id,
         auto_retry=True,
-        max_retry_time=3,
+        max_retry_time=1,
         port=443,
-        connect_timeout=10,
-        timeout=60,
+        connect_timeout=CONNECT_TIMEOUT_SECONDS,
+        timeout=READ_TIMEOUT_SECONDS,
         debug=False,
     )
 

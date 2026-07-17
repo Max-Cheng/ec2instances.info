@@ -25,6 +25,7 @@ SOURCE_URL = (
 # are deliberately absent from this set.
 AVAILABLE_STATES = {"normal", "promotion", "obt"}
 NORMAL_CHARGE_MODES = {"demand", "period"}
+HTTP_TIMEOUT_SECONDS = (5, 20)
 
 PERFORMANCE_NAMES = {
     "normal": "General-purpose",
@@ -121,12 +122,15 @@ def _load_sdk() -> _HuaweiSdk:
 
 
 def _build_iam_client(access_key: str, secret_key: str, sdk: _HuaweiSdk) -> Any:
+    from huaweicloudsdkcore.http.http_config import HttpConfig
+
     credentials = sdk.GlobalCredentials(access_key, secret_key)
     region = sdk.Region(IAM_REGION, IAM_ENDPOINT)
     return (
         sdk.IamClient.new_builder()
         .with_credentials(credentials)
         .with_region(region)
+        .with_http_config(HttpConfig(timeout=HTTP_TIMEOUT_SECONDS))
         .build()
     )
 
@@ -138,6 +142,8 @@ def _build_ecs_client(
     region_id: str,
     sdk: _HuaweiSdk,
 ) -> Any:
+    from huaweicloudsdkcore.http.http_config import HttpConfig
+
     credentials = sdk.BasicCredentials(access_key, secret_key, project_id)
     # Construct the endpoint from IAM's current region list instead of relying
     # on the SDK's generated region table, which can lag newly opened regions.
@@ -149,6 +155,7 @@ def _build_ecs_client(
         sdk.EcsClient.new_builder()
         .with_credentials(credentials)
         .with_region(region)
+        .with_http_config(HttpConfig(timeout=HTTP_TIMEOUT_SECONDS))
         .build()
     )
 

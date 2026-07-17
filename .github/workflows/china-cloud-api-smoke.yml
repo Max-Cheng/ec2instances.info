@@ -1,0 +1,46 @@
+name: China cloud API smoke
+
+on:
+    workflow_dispatch:
+    push:
+        branches:
+            - main
+        paths:
+            - .github/china_cloud_api_smoke.py
+            - .github/workflows/china-cloud-api-smoke.yml
+
+permissions:
+    contents: read
+
+jobs:
+    smoke:
+        name: Verify read-only provider APIs
+        runs-on: ubuntu-24.04
+        timeout-minutes: 10
+        steps:
+            - uses: actions/checkout@v4
+
+            - uses: actions/setup-python@v5
+              with:
+                  python-version: "3.12"
+
+            - name: Install official cloud SDKs
+              run: |
+                  python -m pip install --disable-pip-version-check \
+                    aliyun-python-sdk-core==2.16.0 \
+                    aliyun-python-sdk-ecs==4.24.83 \
+                    tencentcloud-sdk-python==3.1.135 \
+                    volcengine-python-sdk==5.0.41 \
+                    huaweicloudsdkecs==3.1.206
+
+            - name: Query one page of instance types from each provider
+              env:
+                  ALIBABA_CLOUD_ACCESS_KEY_ID: ${{ secrets.ALIBABA_CLOUD_ACCESS_KEY_ID }}
+                  ALIBABA_CLOUD_ACCESS_KEY_SECRET: ${{ secrets.ALIBABA_CLOUD_ACCESS_KEY_SECRET }}
+                  TENCENTCLOUD_SECRET_ID: ${{ secrets.TENCENTCLOUD_SECRET_ID }}
+                  TENCENTCLOUD_SECRET_KEY: ${{ secrets.TENCENTCLOUD_SECRET_KEY }}
+                  VOLCENGINE_ACCESS_KEY_ID: ${{ secrets.VOLCENGINE_ACCESS_KEY_ID }}
+                  VOLCENGINE_SECRET_ACCESS_KEY: ${{ secrets.VOLCENGINE_SECRET_ACCESS_KEY }}
+                  HUAWEI_ACCESS_KEY_ID: ${{ secrets.HUAWEI_ACCESS_KEY_ID }}
+                  HUAWEI_SECRET_ACCESS_KEY: ${{ secrets.HUAWEI_SECRET_ACCESS_KEY }}
+              run: python .github/china_cloud_api_smoke.py

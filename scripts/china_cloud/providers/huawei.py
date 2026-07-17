@@ -238,6 +238,17 @@ def _optional_text(value: Any) -> str | None:
     return text or None
 
 
+def _is_region_forbidden(error: Exception) -> bool:
+    return _value(error, "error_code") == "APIGW.0802"
+
+
+def _warn_region_skipped(region_id: str) -> None:
+    print(
+        "::warning title=Huawei region skipped::"
+        f"{region_id}: IAM user is forbidden in this region (APIGW.0802)"
+    )
+
+
 def _list_flavors(client: Any, sdk: _HuaweiSdk) -> Iterable[Any]:
     marker: str | None = None
     seen_markers: set[str] = set()
@@ -458,7 +469,7 @@ def _record_for_flavor(
 
 
 def fetch() -> dict[str, Any]:
-    """Return public Huawei ECS flavors and current on-demand availability."""
+    """Return public Huawei ECS flavors and regular-purchase availability."""
 
     access_key, secret_key = require_env(
         "HUAWEI_ACCESS_KEY_ID",
@@ -481,20 +492,33 @@ def fetch() -> dict[str, Any]:
     records: list[dict[str, Any]] = []
     regions: list[str] = []
     all_zones: set[str] = set()
+    skipped_regions: list[str] = []
     for region_id, project_id in region_projects:
-        ecs_client = _build_ecs_client(
-            access_key,
-            secret_key,
-            project_id,
-            region_id,
-            sdk,
-        )
-        zone_ids = _list_zone_ids(ecs_client, sdk)
+        try:
+            ecs_client = _build_ecs_client(
+                access_key,
+                secret_key,
+                project_id,
+                region_id,
+                sdk,
+            )
+            zone_ids = _list_zone_ids(ecs_client, sdk)
+            region_records: list[dict[str, Any]] = []
+            for flavor in _list_flavors(ecs_client, sdk):
+                record = _record_for_flavor(flavor, region_id, zone_ids)
+                if record is not None:
+                    region_records.append(record)
+        except Exception as error:
+            if not _is_region_forbidden(error):
+                raise
+            skipped_regions.append(region_id)
+            _warn_region_skipped(region_id)
+            continue
+
         regions.append(region_id)
         all_zones.update(zone_ids)
-        for flavor in _list_flavors(ecs_client, sdk):
-            record = _record_for_flavor(flavor, region_id, zone_ids)
-            if record is not None:
-                records.append(record)
+        records.extend(region_records)
 
-    return provider_result("huawei", records, regions, all_zones)
+    result = provider_result("huawei", records, regions, all_zones)
+    result["skippedRegions"] = skipped_regions
+    return result

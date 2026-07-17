@@ -26,12 +26,12 @@ discount, so each page links to the provider's official price calculator.
   IAM `KeystoneListRegions` and `KeystoneListAuthProjects`, plus ECS
   `ListServerAzInfo` and paginated `ListFlavors`
 
-The availability columns are a point-in-time view of ordinary on-demand stock.
-They do not claim that a flavor is available under every billing term, as a
-spot instance, or to every account. The total shown on each page is the number
-of unique instance type IDs returned by the specification APIs; a type with no
-currently reported on-demand stock remains in the catalog with zero covered
-regions and zones.
+The availability columns are a point-in-time view of standard, non-spot
+purchase availability. They do not claim that a flavor is available under
+every billing term or to every account. The total shown on each page is the
+number of unique instance type IDs returned by the specification APIs; a type
+with no currently reported standard purchase availability remains in the
+catalog with zero covered regions and zones.
 
 ## Updating the catalogs
 
@@ -67,6 +67,9 @@ The keys must be allowed to call the APIs listed above. In particular, Huawei
 Cloud requires `ecs:cloudServerFlavors:get` for flavors and
 `ecs:cloudServers:listServersDetails` for availability zones; the update fails
 instead of publishing incomplete AZ coverage when either call is denied.
+If Huawei IAM lists a region that the collector account has not opened, the
+exact `APIGW.0802` response is reported in `skippedRegions`; other permission
+errors still fail the update.
 
 The validation test in `next/utils/regionalClouds.test.ts` checks minimum
 coverage, unique identifiers, positive CPU/memory values, and official source

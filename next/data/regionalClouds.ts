@@ -53,6 +53,7 @@ export type RegionalCloudProvider = {
     generatedAt?: string;
     regionCount?: number;
     zoneCount?: number;
+    skippedRegions?: string[];
     dataSource?: "api" | "curated";
     instances: RegionalCloudInstance[];
 };
@@ -61,6 +62,7 @@ type GeneratedRegionalCloudProvider = {
     slug: RegionalCloudSlug;
     regionCount: number;
     zoneCount: number;
+    skippedRegions?: string[];
     instances: RegionalCloudInstance[];
 };
 
@@ -679,7 +681,12 @@ function resolveProvider(slug: RegionalCloudSlug): RegionalCloudProvider {
         lastReviewed: generatedCatalog.generatedAt.slice(0, 10),
         regionCount: generated.regionCount,
         zoneCount: generated.zoneCount,
-        coverageNote: `Live API snapshot across ${generated.regionCount} regions and ${generated.zoneCount} availability zones.`,
+        skippedRegions: generated.skippedRegions ?? [],
+        coverageNote: `Live API snapshot across ${generated.regionCount} regions and ${generated.zoneCount} availability zones.${
+            generated.skippedRegions?.length
+                ? ` ${generated.skippedRegions.length} account-inaccessible regions were skipped.`
+                : ""
+        }`,
         instances: generated.instances,
     };
 }

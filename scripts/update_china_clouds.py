@@ -19,10 +19,12 @@ if str(REPOSITORY_ROOT) not in sys.path:
 
 PROVIDER_SLUGS = ("alibaba", "tencent", "volcengine", "huawei")
 MINIMUM_INSTANCE_COUNTS = {
-    "alibaba": 20,
-    "tencent": 20,
-    "volcengine": 20,
-    "huawei": 20,
+    # Conservative floors based on the first complete production snapshot.
+    # These are deliberately below normal counts but above one-page/smoke data.
+    "alibaba": 1000,
+    "tencent": 300,
+    "volcengine": 150,
+    "huawei": 100,
 }
 SECRET_NAMES = (
     "ALIBABA_CLOUD_ACCESS_KEY_ID",
@@ -88,6 +90,15 @@ def validate_provider(slug: str, provider: dict[str, Any]) -> None:
     if zone_count <= 0:
         raise ValueError(f"{slug}: no availability zones were discovered")
 
+    skipped_regions = provider.get("skippedRegions", [])
+    if not isinstance(skipped_regions, list) or any(
+        not isinstance(region, str) or not region.strip()
+        for region in skipped_regions
+    ):
+        raise ValueError(f"{slug}: skippedRegions must be a list of region IDs")
+    if len(set(skipped_regions)) != len(skipped_regions):
+        raise ValueError(f"{slug}: skippedRegions contains duplicates")
+
     seen: set[str] = set()
     instances_with_availability = 0
     for instance in instances:
@@ -135,8 +146,8 @@ def write_step_summary(catalog: dict[str, Any]) -> None:
     lines = [
         "## China cloud catalog refresh",
         "",
-        "| Provider | Unique instance types | Regions | Zones |",
-        "| --- | ---: | ---: | ---: |",
+        "| Provider | Unique instance types | Regions | Zones | Skipped regions |",
+        "| --- | ---: | ---: | ---: | ---: |",
     ]
     for slug in PROVIDER_SLUGS:
         provider = catalog["providers"].get(slug)
@@ -144,7 +155,8 @@ def write_step_summary(catalog: dict[str, Any]) -> None:
             continue
         lines.append(
             f"| {slug} | {len(provider['instances'])} | "
-            f"{provider['regionCount']} | {provider['zoneCount']} |"
+            f"{provider['regionCount']} | {provider['zoneCount']} | "
+            f"{len(provider.get('skippedRegions', []))} |"
         )
     lines.append("")
     with open(summary_path, "a", encoding="utf-8") as handle:

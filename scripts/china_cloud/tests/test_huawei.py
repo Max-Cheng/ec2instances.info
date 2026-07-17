@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import io
 import unittest
+from contextlib import redirect_stdout
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -53,12 +55,15 @@ class FakeIamClient:
 
 
 class FakeEcsClient:
-    def __init__(self, zones, pages):
+    def __init__(self, zones, pages, *, zone_error=None):
         self.zones = zones
         self.pages = pages
+        self.zone_error = zone_error
         self.markers = []
 
     def list_server_az_info(self, _request):
+        if self.zone_error is not None:
+            raise self.zone_error
         return SimpleNamespace(
             availability_zones=[
                 (
@@ -73,6 +78,13 @@ class FakeEcsClient:
     def list_flavors(self, request):
         self.markers.append(getattr(request, "marker", None))
         return SimpleNamespace(flavors=self.pages[len(self.markers) - 1])
+
+
+class FakeClientRequestException(Exception):
+    def __init__(self, error_code: str):
+        super().__init__(error_code)
+        self.status_code = 403
+        self.error_code = error_code
 
 
 class HuaweiProviderTest(unittest.TestCase):
@@ -324,6 +336,7 @@ class HuaweiProviderTest(unittest.TestCase):
         self.assertEqual(result["slug"], "huawei")
         self.assertEqual(result["regionCount"], 2)
         self.assertEqual(result["zoneCount"], 3)
+        self.assertEqual(result["skippedRegions"], [])
         self.assertEqual(len(result["instances"]), 3)
         by_type = {item["instanceType"]: item for item in result["instances"]}
         self.assertEqual(
@@ -340,6 +353,90 @@ class HuaweiProviderTest(unittest.TestCase):
         self.assertEqual(by_type["s7.large.4"]["zones"], [])
         self.assertEqual(clients["cn-east-3"].markers, [None, "s7.large.4"])
         self.assertEqual(clients["cn-north-4"].markers, [None, "m7.xlarge.8"])
+
+    def test_fetch_skips_only_forbidden_region_and_reports_it(self):
+        regions = [
+            SimpleNamespace(id="cn-east-3", type="public"),
+            SimpleNamespace(id="cn-north-4", type="public"),
+        ]
+        projects = [
+            SimpleNamespace(id="p-east", name="cn-east-3", enabled=True),
+            SimpleNamespace(id="p-north", name="cn-north-4", enabled=True),
+        ]
+        clients = {
+            "cn-east-3": FakeEcsClient(
+                [],
+                [],
+                zone_error=FakeClientRequestException("APIGW.0802"),
+            ),
+            "cn-north-4": FakeEcsClient(
+                ["cn-north-4a"],
+                [[flavor("c7.large.2")]],
+            ),
+        }
+
+        with (
+            patch.object(
+                huawei,
+                "require_env",
+                return_value=("access-key", "secret-key"),
+            ),
+            patch.object(huawei, "_load_sdk", return_value=FAKE_SDK),
+            patch.object(
+                huawei,
+                "_build_iam_client",
+                return_value=FakeIamClient(regions, projects),
+            ),
+            patch.object(
+                huawei,
+                "_build_ecs_client",
+                side_effect=lambda _ak, _sk, _project, region, _sdk: clients[
+                    region
+                ],
+            ),
+        ):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                result = huawei.fetch()
+
+        self.assertEqual(result["regionCount"], 1)
+        self.assertEqual(result["zoneCount"], 1)
+        self.assertEqual(result["skippedRegions"], ["cn-east-3"])
+        self.assertEqual(len(result["instances"]), 1)
+        self.assertEqual(result["instances"][0]["regions"], ["cn-north-4"])
+        self.assertIn("::warning", output.getvalue())
+        self.assertIn("cn-east-3", output.getvalue())
+        self.assertIn("APIGW.0802", output.getvalue())
+
+    def test_fetch_propagates_other_forbidden_errors(self):
+        regions = [SimpleNamespace(id="cn-east-3", type="public")]
+        projects = [
+            SimpleNamespace(id="p-east", name="cn-east-3", enabled=True)
+        ]
+        error = FakeClientRequestException("APIGW.0803")
+
+        with (
+            patch.object(
+                huawei,
+                "require_env",
+                return_value=("access-key", "secret-key"),
+            ),
+            patch.object(huawei, "_load_sdk", return_value=FAKE_SDK),
+            patch.object(
+                huawei,
+                "_build_iam_client",
+                return_value=FakeIamClient(regions, projects),
+            ),
+            patch.object(
+                huawei,
+                "_build_ecs_client",
+                return_value=FakeEcsClient([], [], zone_error=error),
+            ),
+        ):
+            with self.assertRaises(FakeClientRequestException) as raised:
+                huawei.fetch()
+
+        self.assertIs(raised.exception, error)
 
 
 if __name__ == "__main__":

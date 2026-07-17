@@ -58,7 +58,7 @@ export type RegionalCloudProvider = {
     instances: RegionalCloudInstance[];
 };
 
-type GeneratedRegionalCloudProvider = {
+export type GeneratedRegionalCloudProvider = {
     slug: RegionalCloudSlug;
     regionCount: number;
     zoneCount: number;
@@ -66,7 +66,7 @@ type GeneratedRegionalCloudProvider = {
     instances: RegionalCloudInstance[];
 };
 
-type GeneratedRegionalCloudCatalog = {
+export type GeneratedRegionalCloudCatalog = {
     schemaVersion: number;
     generatedAt: string | null;
     providers: Partial<
@@ -658,11 +658,14 @@ const curatedRegionalCloudProviders: Record<
 const generatedCatalog =
     generatedCatalogJson as unknown as GeneratedRegionalCloudCatalog;
 
-function resolveProvider(slug: RegionalCloudSlug): RegionalCloudProvider {
+export function resolveRegionalCloudProvider(
+    slug: RegionalCloudSlug,
+    catalog: GeneratedRegionalCloudCatalog = generatedCatalog,
+): RegionalCloudProvider {
     const curated = curatedRegionalCloudProviders[slug];
-    const generated = generatedCatalog.providers[slug];
+    const generated = catalog.providers[slug];
     if (
-        !generatedCatalog.generatedAt ||
+        !catalog.generatedAt ||
         !generated ||
         generated.instances.length === 0
     ) {
@@ -677,8 +680,8 @@ function resolveProvider(slug: RegionalCloudSlug): RegionalCloudProvider {
     return {
         ...curated,
         dataSource: "api",
-        generatedAt: generatedCatalog.generatedAt,
-        lastReviewed: generatedCatalog.generatedAt.slice(0, 10),
+        generatedAt: catalog.generatedAt,
+        lastReviewed: catalog.generatedAt.slice(0, 10),
         regionCount: generated.regionCount,
         zoneCount: generated.zoneCount,
         skippedRegions: generated.skippedRegions ?? [],
@@ -692,5 +695,8 @@ function resolveProvider(slug: RegionalCloudSlug): RegionalCloudProvider {
 }
 
 export const regionalCloudProviders = Object.fromEntries(
-    regionalCloudSlugs.map((slug) => [slug, resolveProvider(slug)]),
+    regionalCloudSlugs.map((slug) => [
+        slug,
+        resolveRegionalCloudProvider(slug),
+    ]),
 ) as Record<RegionalCloudSlug, RegionalCloudProvider>;

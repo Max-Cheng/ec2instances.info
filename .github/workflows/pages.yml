@@ -4,6 +4,9 @@ on:
     push:
         branches:
             - main
+        paths-ignore:
+            - README.md
+            - docs/**
     schedule:
         # 02:23 Asia/Shanghai (UTC+8). Avoid the busy top of the hour.
         - cron: "23 18 * * *"
@@ -30,7 +33,25 @@ jobs:
               id: pages
               uses: actions/configure-pages@v5
 
+            - name: Restore Pages shell for this revision
+              id: pages_shell
+              uses: actions/cache/restore@v4
+              with:
+                  path: next/out
+                  key: pages-shell-v1-${{ runner.os }}-${{ github.sha }}
+                  # Pushes must rebuild and validate even when this SHA was rerun.
+                  lookup-only: ${{ github.event_name == 'push' }}
+
+            - name: Verify curated Pages shell input
+              if: github.event_name == 'push' || steps.pages_shell.outputs.cache-hit != 'true'
+              run: |
+                  jq -e \
+                    '.generatedAt == null and .providers == {}' \
+                    next/data/regionalClouds.generated.json >/dev/null
+                  test ! -e next/public/data/china-clouds.json
+
             - name: Download current production instance data
+              if: github.event_name == 'push' || steps.pages_shell.outputs.cache-hit != 'true'
               run: |
                   curl --fail --location --retry 5 --retry-all-errors \
                     "https://instances.vantage.sh/www_pre_build.tar.gz?run=${GITHUB_RUN_ID}" \
@@ -54,16 +75,77 @@ jobs:
                   test -s www/azure/instances.json
                   test -s www/gcp/instances.json
 
+            - uses: actions/setup-node@v4
+              if: github.event_name == 'push' || steps.pages_shell.outputs.cache-hit != 'true'
+              with:
+                  node-version-file: next/.nvmrc
+                  cache: npm
+                  cache-dependency-path: next/package-lock.json
+
+            - name: Install Node dependencies and initialize data
+              if: github.event_name == 'push' || steps.pages_shell.outputs.cache-hit != 'true'
+              working-directory: next
+              run: |
+                  npm ci
+                  npm run init
+
+            - name: Verify Node project on push
+              if: github.event_name == 'push'
+              working-directory: next
+              run: |
+                  npm run check-types
+                  npm run test -- --run
+
+            - name: Build curated Pages shell
+              if: github.event_name == 'push' || steps.pages_shell.outputs.cache-hit != 'true'
+              working-directory: next
+              env:
+                  NEXT_PUBLIC_URL: ${{ steps.pages.outputs.base_url }}/
+                  NEXT_PUBLIC_BASE_PATH: ${{ steps.pages.outputs.base_path }}
+                  NEXT_PUBLIC_INSTANCE_DETAIL_ORIGIN: https://instances.vantage.sh
+                  NEXT_PUBLIC_REMOVE_ADVERTS: "1"
+                  PAGES_LITE_BUILD: "1"
+              run: |
+                  npm run build:next
+                  touch out/.nojekyll
+                  test -s out/index.html
+
+                  artifact_kib=$(du -sk out | cut -f1)
+                  test "$artifact_kib" -lt 921600
+
+            - name: Save Pages shell for this revision
+              if: steps.pages_shell.outputs.cache-hit != 'true'
+              uses: actions/cache/save@v4
+              with:
+                  path: next/out
+                  key: pages-shell-v1-${{ runner.os }}-${{ github.sha }}
+
             - uses: actions/setup-python@v5
+              id: setup_python
               with:
                   python-version: "3.12"
-                  cache: pip
-                  cache-dependency-path: scripts/china_cloud/requirements.txt
+
+            - name: Restore China cloud SDK virtual environment
+              id: china_cloud_venv
+              uses: actions/cache/restore@v4
+              with:
+                  path: .venv-china-clouds
+                  key: china-cloud-venv-v1-${{ runner.os }}-${{ steps.setup_python.outputs.python-version }}-${{ hashFiles('scripts/china_cloud/requirements.txt') }}
 
             - name: Install China cloud SDKs
+              if: steps.china_cloud_venv.outputs.cache-hit != 'true'
               run: |
-                  python -m pip install --disable-pip-version-check \
+                  python -m venv --copies .venv-china-clouds
+                  .venv-china-clouds/bin/python -m pip install \
+                    --disable-pip-version-check \
                     --requirement scripts/china_cloud/requirements.txt
+
+            - name: Save China cloud SDK virtual environment
+              if: steps.china_cloud_venv.outputs.cache-hit != 'true'
+              uses: actions/cache/save@v4
+              with:
+                  path: .venv-china-clouds
+                  key: china-cloud-venv-v1-${{ runner.os }}-${{ steps.setup_python.outputs.python-version }}-${{ hashFiles('scripts/china_cloud/requirements.txt') }}
 
             - name: Refresh complete China cloud catalogs
               env:
@@ -75,7 +157,7 @@ jobs:
                   VOLCENGINE_SECRET_ACCESS_KEY: ${{ secrets.VOLCENGINE_SECRET_ACCESS_KEY }}
                   HUAWEI_ACCESS_KEY_ID: ${{ secrets.HUAWEI_ACCESS_KEY_ID }}
                   HUAWEI_SECRET_ACCESS_KEY: ${{ secrets.HUAWEI_SECRET_ACCESS_KEY }}
-              run: python -m scripts.update_china_clouds
+              run: .venv-china-clouds/bin/python -m scripts.update_china_clouds
 
             - name: Upload China cloud data snapshot
               uses: actions/upload-artifact@v4
@@ -86,33 +168,18 @@ jobs:
                       next/public/data/china-clouds.json
                   retention-days: 7
 
-            - uses: actions/setup-node@v4
-              with:
-                  node-version-file: next/.nvmrc
-                  cache: npm
-                  cache-dependency-path: next/package-lock.json
-
-            - name: Install and verify
-              working-directory: next
+            - name: Overlay refreshed catalogs onto Pages shell
               run: |
-                  npm ci
-                  npm run init
-                  npm run check-types
-                  npm run test -- --run
+                  test -s next/out/index.html
+                  test -f next/out/.nojekyll
+                  test -s next/public/data/china-clouds.json
+                  install -d next/out/data
+                  install -m 0644 \
+                    next/public/data/china-clouds.json \
+                    next/out/data/china-clouds.json
+                  cmp next/public/data/china-clouds.json next/out/data/china-clouds.json
 
-            - name: Build Pages site
-              working-directory: next
-              env:
-                  NEXT_PUBLIC_URL: ${{ steps.pages.outputs.base_url }}/
-                  NEXT_PUBLIC_BASE_PATH: ${{ steps.pages.outputs.base_path }}
-                  NEXT_PUBLIC_INSTANCE_DETAIL_ORIGIN: https://instances.vantage.sh
-                  NEXT_PUBLIC_REMOVE_ADVERTS: "1"
-                  PAGES_LITE_BUILD: "1"
-              run: |
-                  npm run build:next
-                  touch out/.nojekyll
-
-                  artifact_kib=$(du -sk out | cut -f1)
+                  artifact_kib=$(du -sk next/out | cut -f1)
                   test "$artifact_kib" -lt 921600
 
             - name: Upload Pages artifact

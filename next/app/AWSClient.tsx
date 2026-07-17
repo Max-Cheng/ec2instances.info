@@ -11,9 +11,21 @@ import {
     reservedTermOptions,
     SupportedSavingsPlanOptions,
 } from "@/utils/dataMappings";
-import { MarketingSchema } from "@/schemas/marketing";
+import { InstanceGroupType, MarketingSchema } from "@/schemas/marketing";
 import Advert from "@/components/Advert";
 import type { CurrencyItem } from "@/utils/loadCurrencies";
+import type * as columnData from "@/utils/colunnData";
+
+const homeMarketingGroups = {
+    azure: "azure-home",
+    ec2: "ec2-home",
+    cache: "cache-home",
+    opensearch: "opensearch-home",
+    rds: "rds-home",
+    redshift: "redshift-home",
+    gcp: "gcp-home",
+    regionalCloud: "generic",
+} satisfies Record<keyof typeof columnData, InstanceGroupType>;
 
 type RootProps<Instance extends { instance_type: string }> = {
     columnAtomKey: AtomKeyWhereInstanceIs<Instance>;
@@ -100,7 +112,7 @@ export default function AWSClient<
         <>
             <Advert
                 marketingData={props.marketingData}
-                instanceGroup={`${props.columnAtomKey}-home`}
+                instanceGroup={homeMarketingGroups[props.columnAtomKey]}
                 gpu={false}
             />
             <main className={`${full} overflow-y-hidden flex flex-col`}>

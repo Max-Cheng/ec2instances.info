@@ -7,6 +7,7 @@ import json
 import os
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -163,33 +164,51 @@ def write_step_summary(catalog: dict[str, Any]) -> None:
         handle.write("\n".join(lines))
 
 
+def fetch_provider(slug: str) -> dict[str, Any]:
+    print(f"{slug}: fetching full catalog", flush=True)
+    module = importlib.import_module(f"scripts.china_cloud.providers.{slug}")
+    provider = module.fetch()
+    validate_provider(slug, provider)
+    print(
+        f"{slug}: {len(provider['instances'])} unique instance types, "
+        f"{provider['regionCount']} regions, {provider['zoneCount']} zones",
+        flush=True,
+    )
+    return provider
+
+
 def main() -> int:
     args = parse_args()
     selected = tuple(args.providers or PROVIDER_SLUGS)
-    providers: dict[str, Any] = {}
+    fetched: dict[str, Any] = {}
 
-    for slug in selected:
-        print(f"{slug}: fetching full catalog", flush=True)
-        try:
-            module = importlib.import_module(
-                f"scripts.china_cloud.providers.{slug}"
-            )
-            provider = module.fetch()
-            validate_provider(slug, provider)
-            providers[slug] = provider
-            print(
-                f"{slug}: {len(provider['instances'])} unique instance types, "
-                f"{provider['regionCount']} regions, {provider['zoneCount']} zones",
-                flush=True,
-            )
-        except Exception as error:
-            print(
-                f"::error title={slug} catalog refresh failed::"
-                f"{error.__class__.__name__}: {redact(error)}",
-                file=sys.stderr,
-                flush=True,
-            )
-            return 1
+    # Each provider has independent credentials, endpoints, and rate limits.
+    # Fetch them concurrently so the daily job takes roughly as long as the
+    # slowest cloud instead of the sum of all four clouds.
+    with ThreadPoolExecutor(max_workers=len(selected)) as executor:
+        futures = {
+            executor.submit(fetch_provider, slug): slug for slug in selected
+        }
+        failed = False
+        for future in as_completed(futures):
+            slug = futures[future]
+            try:
+                fetched[slug] = future.result()
+            except Exception as error:
+                failed = True
+                print(
+                    f"::error title={slug} catalog refresh failed::"
+                    f"{error.__class__.__name__}: {redact(error)}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+
+    if failed:
+        return 1
+
+    # Preserve the requested provider order in both JSON and summaries even
+    # though concurrent requests complete in a nondeterministic order.
+    providers = {slug: fetched[slug] for slug in selected}
 
     generated_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace(
         "+00:00", "Z"

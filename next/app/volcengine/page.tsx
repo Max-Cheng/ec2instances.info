@@ -1,4 +1,4 @@
-import RegionalCloudCatalog from "@/components/RegionalCloudCatalog";
+import RegionalCloudIndex from "@/components/RegionalCloudIndex";
 import { regionalCloudProviders } from "@/data/regionalClouds";
 import type { Metadata } from "next";
 
@@ -9,7 +9,5 @@ export const metadata: Metadata = {
 };
 
 export default function VolcenginePage() {
-    return (
-        <RegionalCloudCatalog provider={regionalCloudProviders.volcengine} />
-    );
+    return <RegionalCloudIndex provider={regionalCloudProviders.volcengine} />;
 }

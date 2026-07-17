@@ -4,12 +4,17 @@ The Alibaba Cloud, Tencent Cloud, Volcengine, and Huawei Cloud pages are built
 from the providers' read-only instance catalog APIs. The ingestion job follows
 all pagination, enumerates regions and availability zones, merges availability
 by instance type, and writes `next/data/regionalClouds.generated.json` before
-the Next.js build. The checked-in TypeScript catalog remains a small fallback
-for local and pull-request builds that do not have cloud credentials.
+writing the public `/data/china-clouds.json` snapshot. The pages load the public
+snapshot at runtime, while the checked-in TypeScript catalog remains a small
+fallback for local builds, initial rendering, and failed client refreshes.
 
 These pages intentionally do not copy prices into the repository. Prices vary
 by region, operating system, billing term, sales channel, and account-level
 discount, so each page links to the provider's official price calculator.
+They reuse the main site's virtualized comparison table, column filters,
+sorting, selection, comparison, export, and search controls. AWS-only price,
+Reserved/Spot, ECU, EBS, and benchmark controls are omitted because the China
+cloud catalog APIs do not expose equivalent data with a common definition.
 
 ## Data sources
 
@@ -35,11 +40,13 @@ catalog with zero covered regions and zones.
 
 ## Updating the catalogs
 
-The fork's `Daily GitHub Pages` workflow refreshes all four catalogs before
-every scheduled Pages build. It runs daily at 02:23 Asia/Shanghai and can also
-be started manually. A successful build publishes the normalized raw snapshot
-at `/data/china-clouds.json`, in addition to embedding it in the four catalog
-pages.
+The fork's `Daily GitHub Pages` workflow runs daily at 02:23 Asia/Shanghai and
+can also be started manually. Provider calls run concurrently. Pushes to
+`main` perform the full Node verification and static build once, then cache the
+validated Pages shell by commit. Scheduled and manual runs restore that shell,
+refresh only the Python/API data, and overlay the normalized snapshot at
+`/data/china-clouds.json`. A cache miss safely falls back to rebuilding the
+shell, but daily refreshes normally skip Node installation, tests, and Next.js.
 
 To run the ingestion locally:
 

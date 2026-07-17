@@ -53,12 +53,14 @@ the API list, required Secrets, and local update command.
 
 This fork publishes a Pages build through
 [`pages.yml`](./.github/workflows/pages.yml). It runs after changes to `main`,
-can be started manually, and runs every day at 02:23 Asia/Shanghai. Each build
-downloads Vantage's current production data package before compiling the site,
-so the AWS, Azure, and GCP comparison tables refresh without cloud credentials.
-It then uses repository Secrets to fetch the four China cloud catalogs with
-full pagination and publishes the normalized snapshot at
-`/data/china-clouds.json`.
+can be started manually, and runs every day at 02:23 Asia/Shanghai. A push
+performs the full type check, test suite, and static build, then caches that
+validated Pages shell by commit. Scheduled and manual refreshes restore the
+shell, fetch the four China cloud catalogs concurrently with full pagination,
+and replace only `/data/china-clouds.json`. The China cloud pages load that
+snapshot at runtime, so daily data updates do not spend Actions minutes on a
+second Node install, test suite, or Next.js build. Vantage's production data
+package is downloaded only when a new shell must be built.
 
 GitHub Pages limits a published site to 1 GB, while the full export with every
 single-instance detail page is larger than that. The Pages workflow therefore

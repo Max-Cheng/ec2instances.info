@@ -1,4 +1,4 @@
-import RegionalCloudCatalog from "@/components/RegionalCloudCatalog";
+import RegionalCloudIndex from "@/components/RegionalCloudIndex";
 import { regionalCloudProviders } from "@/data/regionalClouds";
 import type { Metadata } from "next";
 
@@ -9,5 +9,5 @@ export const metadata: Metadata = {
 };
 
 export default function TencentCloudPage() {
-    return <RegionalCloudCatalog provider={regionalCloudProviders.tencent} />;
+    return <RegionalCloudIndex provider={regionalCloudProviders.tencent} />;
 }

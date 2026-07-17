@@ -33,13 +33,18 @@ jobs:
               id: pages
               uses: actions/configure-pages@v5
 
-            - name: Restore Pages shell for this revision
+            - name: Identify tracked frontend content
+              id: pages_shell_key
+              run: echo "tree=$(git rev-parse HEAD:next)" >> "$GITHUB_OUTPUT"
+
+            - name: Restore Pages shell for this frontend
               id: pages_shell
               uses: actions/cache/restore@v4
               with:
                   path: next/out
-                  key: pages-shell-v1-${{ runner.os }}-${{ github.sha }}
-                  # Pushes must rebuild and validate even when this SHA was rerun.
+                  key: pages-shell-v2-${{ runner.os }}-${{ steps.pages_shell_key.outputs.tree }}
+                  # Pushes still rebuild and validate; scheduled runs can reuse
+                  # the shell across collector-only and documentation commits.
                   lookup-only: ${{ github.event_name == 'push' }}
 
             - name: Verify curated Pages shell input
@@ -113,12 +118,12 @@ jobs:
                   artifact_kib=$(du -sk out | cut -f1)
                   test "$artifact_kib" -lt 921600
 
-            - name: Save Pages shell for this revision
+            - name: Save Pages shell for this frontend
               if: steps.pages_shell.outputs.cache-hit != 'true'
               uses: actions/cache/save@v4
               with:
                   path: next/out
-                  key: pages-shell-v1-${{ runner.os }}-${{ github.sha }}
+                  key: pages-shell-v2-${{ runner.os }}-${{ steps.pages_shell_key.outputs.tree }}
 
             - uses: actions/setup-python@v5
               id: setup_python

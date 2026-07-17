@@ -43,7 +43,7 @@ catalog with zero covered regions and zones.
 The fork's `Daily GitHub Pages` workflow runs daily at 02:23 Asia/Shanghai and
 can also be started manually. Provider calls run concurrently. Pushes to
 `main` perform the full Node verification and static build once, then cache the
-validated Pages shell by commit. Scheduled and manual runs restore that shell,
+validated Pages shell by frontend content. Scheduled and manual runs restore that shell,
 refresh only the Python/API data, and overlay the normalized snapshot at
 `/data/china-clouds.json`. A cache miss safely falls back to rebuilding the
 shell, but daily refreshes normally skip Node installation, tests, and Next.js.

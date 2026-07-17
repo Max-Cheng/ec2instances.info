@@ -6,7 +6,9 @@ import {
 
 const officialSourceHosts = new Set([
     "www.alibabacloud.com",
+    "help.aliyun.com",
     "intl.cloud.tencent.com",
+    "cloud.tencent.com",
     "api.volcengine.com",
     "support.huaweicloud.com",
 ]);
@@ -22,7 +24,9 @@ describe("regional cloud catalog data", () => {
         const provider = regionalCloudProviders[slug];
 
         test(`${slug} has a useful and internally consistent catalog`, () => {
-            expect(provider.instances.length).toBeGreaterThanOrEqual(12);
+            expect(provider.instances.length).toBeGreaterThanOrEqual(
+                provider.dataSource === "api" ? 20 : 12,
+            );
             expect(
                 new Set(provider.instances.map((item) => item.family)).size,
             ).toBeGreaterThanOrEqual(3);
@@ -39,6 +43,29 @@ describe("regional cloud catalog data", () => {
                 expect(officialSourceHosts).toContain(
                     new URL(instance.sourceUrl).hostname,
                 );
+                if (provider.dataSource === "api") {
+                    expect(instance.availableRegionCount).toBe(
+                        instance.regions?.length,
+                    );
+                    expect(instance.availableZoneCount).toBe(
+                        instance.zones?.length,
+                    );
+                }
+            }
+
+            if (provider.dataSource === "api") {
+                expect(provider.generatedAt).toMatch(
+                    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/,
+                );
+                expect(provider.regionCount).toBeGreaterThan(0);
+                expect(provider.zoneCount).toBeGreaterThan(0);
+                expect(
+                    provider.instances.some(
+                        (instance) =>
+                            (instance.availableRegionCount ?? 0) > 0 &&
+                            (instance.availableZoneCount ?? 0) > 0,
+                    ),
+                ).toBe(true);
             }
         });
     }

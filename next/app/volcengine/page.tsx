@@ -5,7 +5,7 @@ import type { Metadata } from "next";
 export const metadata: Metadata = {
     title: "Volcengine ECS Instance Comparison",
     description:
-        "Compare representative Volcengine ECS instance families, processors, vCPUs, memory, architecture, and network performance.",
+        "Compare Volcengine ECS instance types, processors, vCPUs, memory, architecture, network performance, and regional availability.",
 };
 
 export default function VolcenginePage() {

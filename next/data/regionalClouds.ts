@@ -1,3 +1,5 @@
+import generatedCatalogJson from "./regionalClouds.generated.json";
+
 export const regionalCloudSlugs = [
     "alibaba",
     "tencent",
@@ -10,9 +12,14 @@ export type RegionalCloudSlug = (typeof regionalCloudSlugs)[number];
 export type RegionalCloudCategory =
     | "General purpose"
     | "Compute optimized"
-    | "Memory optimized";
+    | "Memory optimized"
+    | "Accelerated computing"
+    | "Storage optimized"
+    | "High performance computing"
+    | "Bare metal"
+    | "Other";
 
-export type RegionalCloudArchitecture = "x86_64" | "arm64";
+export type RegionalCloudArchitecture = "x86_64" | "arm64" | "unknown";
 
 export type RegionalCloudInstance = {
     instanceType: string;
@@ -26,6 +33,10 @@ export type RegionalCloudInstance = {
     networkPerformance: string;
     localStorage: string;
     sourceUrl: string;
+    regions?: string[];
+    zones?: string[];
+    availableRegionCount?: number;
+    availableZoneCount?: number;
 };
 
 export type RegionalCloudProvider = {
@@ -39,7 +50,26 @@ export type RegionalCloudProvider = {
     pricingUrl: string;
     lastReviewed: string;
     coverageNote: string;
+    generatedAt?: string;
+    regionCount?: number;
+    zoneCount?: number;
+    dataSource?: "api" | "curated";
     instances: RegionalCloudInstance[];
+};
+
+type GeneratedRegionalCloudProvider = {
+    slug: RegionalCloudSlug;
+    regionCount: number;
+    zoneCount: number;
+    instances: RegionalCloudInstance[];
+};
+
+type GeneratedRegionalCloudCatalog = {
+    schemaVersion: number;
+    generatedAt: string | null;
+    providers: Partial<
+        Record<RegionalCloudSlug, GeneratedRegionalCloudProvider>
+    >;
 };
 
 type FamilyOptions = Omit<
@@ -555,7 +585,7 @@ const huaweiInstances = [
     }),
 ];
 
-export const regionalCloudProviders: Record<
+const curatedRegionalCloudProviders: Record<
     RegionalCloudSlug,
     RegionalCloudProvider
 > = {
@@ -566,7 +596,7 @@ export const regionalCloudProviders: Record<
         productName: "Elastic Compute Service (ECS)",
         catalogName: "Alibaba Cloud ECS",
         description:
-            "Compare representative Alibaba Cloud ECS general-purpose, compute-optimized, memory-optimized, and Arm instance types.",
+            "Compare Alibaba Cloud ECS general-purpose, compute-optimized, memory-optimized, Arm, storage, and accelerated instance types.",
         documentationUrl:
             "https://www.alibabacloud.com/help/en/ecs/user-guide/instance-families/",
         pricingUrl: "https://www.alibabacloud.com/pricing/calculator",
@@ -582,7 +612,7 @@ export const regionalCloudProviders: Record<
         productName: "Cloud Virtual Machine (CVM)",
         catalogName: "Tencent Cloud CVM",
         description:
-            "Compare representative Tencent Cloud CVM standard, compute-optimized, and memory-optimized instance types.",
+            "Compare Tencent Cloud CVM standard, compute-optimized, memory-optimized, storage, and accelerated instance types.",
         documentationUrl: tencentInstanceSpecificationsUrl,
         pricingUrl: "https://buy.cloud.tencent.com/price/cvm/calculator",
         lastReviewed: "2026-07-10",
@@ -597,7 +627,7 @@ export const regionalCloudProviders: Record<
         productName: "Elastic Compute Service (ECS)",
         catalogName: "Volcengine ECS",
         description:
-            "Compare representative Volcengine ECS general-purpose, compute-optimized, and memory-optimized instance types.",
+            "Compare Volcengine ECS general-purpose, compute-optimized, memory-optimized, storage, and accelerated instance types.",
         documentationUrl: volcengineInstanceTypesUrl,
         pricingUrl: "https://www.volcengine.com/pricing",
         lastReviewed: "2026-07-10",
@@ -612,7 +642,7 @@ export const regionalCloudProviders: Record<
         productName: "Elastic Cloud Server (ECS)",
         catalogName: "Huawei Cloud ECS",
         description:
-            "Compare representative Huawei Cloud ECS general computing-plus, compute-optimized, and memory-optimized flavors.",
+            "Compare Huawei Cloud ECS general computing-plus, compute-optimized, memory-optimized, storage, and accelerated flavors.",
         documentationUrl:
             "https://support.huaweicloud.com/intl/en-us/productdesc-ecs/en-us_topic_0035470096.html",
         pricingUrl: "https://www.huaweicloud.com/intl/en-us/pricing/index.html",
@@ -622,3 +652,38 @@ export const regionalCloudProviders: Record<
         instances: huaweiInstances,
     },
 };
+
+const generatedCatalog =
+    generatedCatalogJson as unknown as GeneratedRegionalCloudCatalog;
+
+function resolveProvider(slug: RegionalCloudSlug): RegionalCloudProvider {
+    const curated = curatedRegionalCloudProviders[slug];
+    const generated = generatedCatalog.providers[slug];
+    if (
+        !generatedCatalog.generatedAt ||
+        !generated ||
+        generated.instances.length === 0
+    ) {
+        return {
+            ...curated,
+            dataSource: "curated",
+            regionCount: 0,
+            zoneCount: 0,
+        };
+    }
+
+    return {
+        ...curated,
+        dataSource: "api",
+        generatedAt: generatedCatalog.generatedAt,
+        lastReviewed: generatedCatalog.generatedAt.slice(0, 10),
+        regionCount: generated.regionCount,
+        zoneCount: generated.zoneCount,
+        coverageNote: `Live API snapshot across ${generated.regionCount} regions and ${generated.zoneCount} availability zones.`,
+        instances: generated.instances,
+    };
+}
+
+export const regionalCloudProviders = Object.fromEntries(
+    regionalCloudSlugs.map((slug) => [slug, resolveProvider(slug)]),
+) as Record<RegionalCloudSlug, RegionalCloudProvider>;

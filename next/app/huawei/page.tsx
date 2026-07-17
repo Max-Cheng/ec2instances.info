@@ -5,7 +5,7 @@ import type { Metadata } from "next";
 export const metadata: Metadata = {
     title: "Huawei Cloud ECS Instance Comparison",
     description:
-        "Compare representative Huawei Cloud ECS flavors, processors, vCPUs, memory, architecture, and network performance.",
+        "Compare Huawei Cloud ECS flavors, processors, vCPUs, memory, architecture, network performance, and regional availability.",
 };
 
 export default function HuaweiCloudPage() {

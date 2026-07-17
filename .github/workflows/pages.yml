@@ -22,6 +22,7 @@ jobs:
     build:
         name: Build daily Pages artifact
         runs-on: ubuntu-24.04
+        timeout-minutes: 30
         steps:
             - uses: actions/checkout@v4
 
@@ -52,6 +53,38 @@ jobs:
                   test -s www/redshift/instances.json
                   test -s www/azure/instances.json
                   test -s www/gcp/instances.json
+
+            - uses: actions/setup-python@v5
+              with:
+                  python-version: "3.12"
+                  cache: pip
+                  cache-dependency-path: scripts/china_cloud/requirements.txt
+
+            - name: Install China cloud SDKs
+              run: |
+                  python -m pip install --disable-pip-version-check \
+                    --requirement scripts/china_cloud/requirements.txt
+
+            - name: Refresh complete China cloud catalogs
+              env:
+                  ALIBABA_CLOUD_ACCESS_KEY_ID: ${{ secrets.ALIBABA_CLOUD_ACCESS_KEY_ID }}
+                  ALIBABA_CLOUD_ACCESS_KEY_SECRET: ${{ secrets.ALIBABA_CLOUD_ACCESS_KEY_SECRET }}
+                  TENCENTCLOUD_SECRET_ID: ${{ secrets.TENCENTCLOUD_SECRET_ID }}
+                  TENCENTCLOUD_SECRET_KEY: ${{ secrets.TENCENTCLOUD_SECRET_KEY }}
+                  VOLCENGINE_ACCESS_KEY_ID: ${{ secrets.VOLCENGINE_ACCESS_KEY_ID }}
+                  VOLCENGINE_SECRET_ACCESS_KEY: ${{ secrets.VOLCENGINE_SECRET_ACCESS_KEY }}
+                  HUAWEI_ACCESS_KEY_ID: ${{ secrets.HUAWEI_ACCESS_KEY_ID }}
+                  HUAWEI_SECRET_ACCESS_KEY: ${{ secrets.HUAWEI_SECRET_ACCESS_KEY }}
+              run: python scripts/update_china_clouds.py
+
+            - name: Upload China cloud data snapshot
+              uses: actions/upload-artifact@v4
+              with:
+                  name: china-cloud-catalog-${{ github.run_id }}
+                  path: |
+                      next/data/regionalClouds.generated.json
+                      next/public/data/china-clouds.json
+                  retention-days: 7
 
             - uses: actions/setup-node@v4
               with:

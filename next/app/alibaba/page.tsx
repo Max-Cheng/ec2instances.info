@@ -5,7 +5,7 @@ import type { Metadata } from "next";
 export const metadata: Metadata = {
     title: "Alibaba Cloud ECS Instance Comparison",
     description:
-        "Compare representative Alibaba Cloud ECS instance families, processors, vCPUs, memory, architecture, and network performance.",
+        "Compare Alibaba Cloud ECS instance types, processors, vCPUs, memory, architecture, network performance, and regional availability.",
 };
 
 export default function AlibabaCloudPage() {

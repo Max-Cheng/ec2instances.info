@@ -41,12 +41,13 @@ Make sure your pull requests target `develop` since this is our staging. When it
 
 The scraper is written in Go and fetches data from AWS, Azure, and GCP APIs. You'll need credentials for each provider.
 
-The site also includes curated comparison pages for Alibaba Cloud ECS, Tencent
-Cloud CVM, Volcengine ECS, and Huawei Cloud ECS. These catalogs cover
-representative documented instance families and link to each provider's live
-price calculator instead of storing region- and account-dependent prices. See
-[the China cloud catalog documentation](./docs/china-cloud-catalogs.md) for the
-data sources and update process.
+The site also includes comparison pages for Alibaba Cloud ECS, Tencent Cloud
+CVM, Volcengine ECS, and Huawei Cloud ECS. The fork's Pages workflow refreshes
+their complete instance catalogs, regions, and availability-zone coverage from
+read-only provider APIs. Prices still link to each provider's calculator
+because they depend on region, billing model, image, and account discounts.
+See [the China cloud catalog documentation](./docs/china-cloud-catalogs.md) for
+the API list, required Secrets, and local update command.
 
 ### Fork GitHub Pages deployment
 
@@ -55,8 +56,9 @@ This fork publishes a Pages build through
 can be started manually, and runs every day at 02:23 Asia/Shanghai. Each build
 downloads Vantage's current production data package before compiling the site,
 so the AWS, Azure, and GCP comparison tables refresh without cloud credentials.
-The four curated China cloud catalogs remain source-controlled and are updated
-through normal code changes.
+It then uses repository Secrets to fetch the four China cloud catalogs with
+full pagination and publishes the normalized snapshot at
+`/data/china-clouds.json`.
 
 GitHub Pages limits a published site to 1 GB, while the full export with every
 single-instance detail page is larger than that. The Pages workflow therefore

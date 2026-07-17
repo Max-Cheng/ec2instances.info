@@ -101,6 +101,8 @@ export default function RegionalCloudCatalog({
                     instance.familyName,
                     instance.category,
                     instance.processor,
+                    ...(instance.regions ?? []),
+                    ...(instance.zones ?? []),
                 ].some((value) =>
                     value.toLowerCase().includes(normalizedSearch),
                 );
@@ -156,12 +158,20 @@ export default function RegionalCloudCatalog({
                             <span className="rounded-full border border-gray-3 bg-background px-2 py-0.5 text-xs">
                                 {provider.nativeName}
                             </span>
+                            <span className="rounded-full border border-gray-3 bg-background px-2 py-0.5 text-xs">
+                                {provider.dataSource === "api"
+                                    ? "Live API data"
+                                    : "Curated fallback"}
+                            </span>
                         </div>
                         <p className="text-sm text-gray-2">
                             {provider.description}
                         </p>
                         <p className="mt-2 text-xs text-gray-2">
-                            {provider.coverageNote} Specifications reviewed on{" "}
+                            {provider.coverageNote}{" "}
+                            {provider.dataSource === "api"
+                                ? "Snapshot generated on "
+                                : "Specifications reviewed on "}
                             <time dateTime={provider.lastReviewed}>
                                 {provider.lastReviewed}
                             </time>
@@ -279,13 +289,13 @@ export default function RegionalCloudCatalog({
                         className="ml-auto text-sm text-gray-2"
                     >
                         {visibleInstances.length} of {provider.instances.length}{" "}
-                        instances
+                        unique instance types
                     </p>
                 </div>
             </section>
 
             <div className="mx-auto w-full max-w-screen-2xl flex-1 overflow-auto">
-                <table className="index-table min-w-[1180px]">
+                <table className="index-table min-w-[1320px]">
                     <caption className="sr-only">
                         {provider.catalogName} instance catalog
                     </caption>
@@ -329,6 +339,8 @@ export default function RegionalCloudCatalog({
                             </th>
                             <th className="w-28 px-2 py-3">Memory/vCPU</th>
                             <th className="w-28 px-2 py-3">Architecture</th>
+                            <th className="w-20 px-2 py-3">Regions</th>
+                            <th className="w-20 px-2 py-3">Zones</th>
                             <th className="w-64 px-2 py-3">Processor</th>
                             <th className="w-64 px-2 py-3">
                                 Network performance
@@ -370,6 +382,16 @@ export default function RegionalCloudCatalog({
                                 <td>{instance.memoryGiB} GiB</td>
                                 <td>{memoryPerVcpu(instance)} GiB</td>
                                 <td>{instance.architecture}</td>
+                                <td title={(instance.regions ?? []).join(", ")}>
+                                    {instance.availableRegionCount ??
+                                        instance.regions?.length ??
+                                        "—"}
+                                </td>
+                                <td title={(instance.zones ?? []).join(", ")}>
+                                    {instance.availableZoneCount ??
+                                        instance.zones?.length ??
+                                        "—"}
+                                </td>
                                 <td>{instance.processor}</td>
                                 <td>{instance.networkPerformance}</td>
                                 <td>{instance.localStorage}</td>

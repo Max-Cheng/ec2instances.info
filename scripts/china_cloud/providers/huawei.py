@@ -223,12 +223,14 @@ def _is_public_shared_center_zone(zone: Any) -> bool:
     mode = _optional_text(_value(zone, "mode"))
     category = _optional_text(_value(zone, "category"))
 
-    # Older ListServerAzInfo responses did not return classification fields.
-    # Preserve those AZs, but do not treat a partially classified response as
-    # public: every current field must explicitly identify a shared center AZ.
-    if zone_type is None and mode is None and category is None:
-        return True
-    return zone_type == "center" and mode == "shared" and category == "0"
+    # The API omits default-valued fields in some regions. Treat a missing
+    # classifier as unspecified, while rejecting every explicit non-public,
+    # dedicated, HomeZone, or IES value.
+    return (
+        zone_type in {None, "center"}
+        and mode in {None, "shared"}
+        and category in {None, "0"}
+    )
 
 
 def _optional_text(value: Any) -> str | None:

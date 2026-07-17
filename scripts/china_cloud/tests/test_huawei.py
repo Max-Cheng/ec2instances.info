@@ -122,18 +122,34 @@ class HuaweiProviderTest(unittest.TestCase):
             ),
             # Legacy responses omitted all three classification fields.
             SimpleNamespace(availability_zone_id="cn-north-4-legacy"),
-            # A partially classified response is not safe to assume public.
+            # Default-valued classifiers can be omitted by some regions.
             SimpleNamespace(
                 availability_zone_id="cn-north-4-incomplete",
                 type="Center",
                 mode="shared",
+            ),
+            SimpleNamespace(
+                availability_zone_id="cn-north-4-no-type",
+                mode="shared",
+                category=0,
+            ),
+            SimpleNamespace(
+                availability_zone_id="cn-north-4-no-mode",
+                type="Center",
+                category=0,
             ),
         ]
         client = FakeEcsClient(zones, [[]])
 
         self.assertEqual(
             huawei._list_zone_ids(client, FAKE_SDK),
-            ["cn-north-4-legacy", "cn-north-4a"],
+            [
+                "cn-north-4-incomplete",
+                "cn-north-4-legacy",
+                "cn-north-4-no-mode",
+                "cn-north-4-no-type",
+                "cn-north-4a",
+            ],
         )
 
     def test_region_projects_only_uses_enabled_public_region_projects(self):

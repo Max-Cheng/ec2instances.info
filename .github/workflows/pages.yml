@@ -75,7 +75,7 @@ jobs:
                   VOLCENGINE_SECRET_ACCESS_KEY: ${{ secrets.VOLCENGINE_SECRET_ACCESS_KEY }}
                   HUAWEI_ACCESS_KEY_ID: ${{ secrets.HUAWEI_ACCESS_KEY_ID }}
                   HUAWEI_SECRET_ACCESS_KEY: ${{ secrets.HUAWEI_SECRET_ACCESS_KEY }}
-              run: python scripts/update_china_clouds.py
+              run: python -m scripts.update_china_clouds
 
             - name: Upload China cloud data snapshot
               uses: actions/upload-artifact@v4

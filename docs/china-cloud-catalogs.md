@@ -45,7 +45,7 @@ To run the ingestion locally:
 
 ```bash
 python -m pip install --requirement scripts/china_cloud/requirements.txt
-python scripts/update_china_clouds.py
+python -m scripts.update_china_clouds
 ```
 
 The command expects these environment variables:

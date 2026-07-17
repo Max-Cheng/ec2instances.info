@@ -14,7 +14,7 @@ on:
 
 concurrency:
     group: github-pages
-    cancel-in-progress: false
+    cancel-in-progress: true
 
 permissions:
     contents: read
@@ -25,7 +25,7 @@ jobs:
     build:
         name: Build daily Pages artifact
         runs-on: ubuntu-24.04
-        timeout-minutes: 30
+        timeout-minutes: 15
         steps:
             - uses: actions/checkout@v4
 
@@ -89,8 +89,8 @@ jobs:
                   npm ci
                   npm run init
 
-            - name: Verify Node project on push
-              if: github.event_name == 'push'
+            - name: Verify Node project when building a shell
+              if: github.event_name == 'push' || steps.pages_shell.outputs.cache-hit != 'true'
               working-directory: next
               run: |
                   npm run check-types
@@ -149,6 +149,7 @@ jobs:
 
             - name: Refresh complete China cloud catalogs
               env:
+                  PYTHONUNBUFFERED: "1"
                   ALIBABA_CLOUD_ACCESS_KEY_ID: ${{ secrets.ALIBABA_CLOUD_ACCESS_KEY_ID }}
                   ALIBABA_CLOUD_ACCESS_KEY_SECRET: ${{ secrets.ALIBABA_CLOUD_ACCESS_KEY_SECRET }}
                   TENCENTCLOUD_SECRET_ID: ${{ secrets.TENCENTCLOUD_SECRET_ID }}
@@ -157,7 +158,15 @@ jobs:
                   VOLCENGINE_SECRET_ACCESS_KEY: ${{ secrets.VOLCENGINE_SECRET_ACCESS_KEY }}
                   HUAWEI_ACCESS_KEY_ID: ${{ secrets.HUAWEI_ACCESS_KEY_ID }}
                   HUAWEI_SECRET_ACCESS_KEY: ${{ secrets.HUAWEI_SECRET_ACCESS_KEY }}
-              run: .venv-china-clouds/bin/python -m scripts.update_china_clouds
+              run: |
+                  status=0
+                  timeout --signal=TERM --kill-after=15s 180s \
+                    .venv-china-clouds/bin/python -m scripts.update_china_clouds \
+                    || status=$?
+                  if [ "$status" -eq 124 ]; then
+                    echo "::error title=China cloud refresh timed out::Provider APIs did not finish within 180 seconds; keeping the previous Pages deployment."
+                  fi
+                  exit "$status"
 
             - name: Upload China cloud data snapshot
               uses: actions/upload-artifact@v4

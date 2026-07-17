@@ -47,6 +47,10 @@ validated Pages shell by commit. Scheduled and manual runs restore that shell,
 refresh only the Python/API data, and overlay the normalized snapshot at
 `/data/china-clouds.json`. A cache miss safely falls back to rebuilding the
 shell, but daily refreshes normally skip Node installation, tests, and Next.js.
+The provider refresh has a three-minute hard deadline and the complete job has
+a fifteen-minute ceiling. If a provider SDK or network path stalls, the run
+fails within that bound and GitHub Pages keeps serving the previous successful
+snapshot. Starting a newer run also cancels an older in-progress run.
 
 To run the ingestion locally:
 

@@ -60,6 +60,26 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=Path("next/public/data/china-clouds.json"),
     )
+    parser.add_argument(
+        "--previous",
+        type=Path,
+        help="Validated previous full catalog used to checkpoint partial progress.",
+    )
+    parser.add_argument(
+        "--checkpoint",
+        type=Path,
+        help="Atomically updated full catalog checkpoint for timeout recovery.",
+    )
+    parser.add_argument(
+        "--failure-marker",
+        type=Path,
+        help="Touched when a provider raises an explicit error.",
+    )
+    parser.add_argument(
+        "--validate-only",
+        type=Path,
+        help="Validate an existing full catalog and exit without calling providers.",
+    )
     return parser.parse_args()
 
 
@@ -129,6 +149,67 @@ def validate_provider(slug: str, provider: dict[str, Any]) -> None:
         raise ValueError(f"{slug}: no instance type has regional/AZ availability")
 
 
+def build_catalog(
+    providers: dict[str, Any],
+    generated_at: str,
+) -> dict[str, Any]:
+    ordered = {
+        slug: providers[slug]
+        for slug in PROVIDER_SLUGS
+        if slug in providers
+    }
+    return {
+        "schemaVersion": 1,
+        "generatedAt": generated_at,
+        "providers": ordered,
+        "totals": {
+            "providers": len(ordered),
+            "uniqueInstanceTypes": sum(
+                len(provider["instances"]) for provider in ordered.values()
+            ),
+        },
+    }
+
+
+def validate_catalog(catalog: dict[str, Any]) -> None:
+    if catalog.get("schemaVersion") != 1:
+        raise ValueError("catalog: schemaVersion must be 1")
+    generated_at = catalog.get("generatedAt")
+    if not isinstance(generated_at, str) or not generated_at.strip():
+        raise ValueError("catalog: generatedAt must be a non-empty string")
+
+    providers = catalog.get("providers")
+    if not isinstance(providers, dict):
+        raise ValueError("catalog: providers must be an object")
+    if set(providers) != set(PROVIDER_SLUGS):
+        raise ValueError("catalog: all four providers must be present")
+    for slug in PROVIDER_SLUGS:
+        provider = providers.get(slug)
+        if not isinstance(provider, dict):
+            raise ValueError(f"catalog: {slug} provider must be an object")
+        validate_provider(slug, provider)
+
+    totals = catalog.get("totals")
+    if not isinstance(totals, dict):
+        raise ValueError("catalog: totals must be an object")
+    if int(totals.get("providers") or 0) != len(PROVIDER_SLUGS):
+        raise ValueError("catalog: provider total mismatch")
+    expected_instances = sum(
+        len(providers[slug]["instances"]) for slug in PROVIDER_SLUGS
+    )
+    if int(totals.get("uniqueInstanceTypes") or 0) != expected_instances:
+        raise ValueError("catalog: instance total mismatch")
+
+
+def load_catalog(path: Path) -> dict[str, Any]:
+    with path.open("r", encoding="utf-8") as handle:
+        catalog = json.load(handle)
+    if not isinstance(catalog, dict):
+        raise ValueError(f"{path}: catalog must be an object")
+    validate_catalog(catalog)
+    return catalog
+
+
 def atomic_write(path: Path, value: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     serialized = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
@@ -177,23 +258,66 @@ def fetch_provider(slug: str) -> dict[str, Any]:
     return provider
 
 
+def fetch_provider_guarded(
+    slug: str,
+    failure_marker: Path | None,
+) -> dict[str, Any]:
+    try:
+        return fetch_provider(slug)
+    except Exception:
+        # Write from the worker before propagating the error, closing the small
+        # window where the outer timeout could kill the coordinator before it
+        # records that this was an explicit provider failure rather than a hang.
+        if failure_marker:
+            failure_marker.parent.mkdir(parents=True, exist_ok=True)
+            failure_marker.touch()
+        raise
+
+
 def main() -> int:
     args = parse_args()
+    if args.validate_only:
+        catalog = load_catalog(args.validate_only)
+        print(
+            f"validated {catalog['totals']['uniqueInstanceTypes']} unique instance "
+            f"types in {args.validate_only}",
+            flush=True,
+        )
+        return 0
+
     selected = tuple(args.providers or PROVIDER_SLUGS)
     fetched: dict[str, Any] = {}
+    previous = load_catalog(args.previous) if args.previous else None
+    providers: dict[str, Any] = dict(previous["providers"]) if previous else {}
+    checkpoint_generated_at = str(previous["generatedAt"]) if previous else ""
+
+    if args.failure_marker and args.failure_marker.exists():
+        args.failure_marker.unlink()
+    if args.checkpoint and previous:
+        atomic_write(
+            args.checkpoint,
+            build_catalog(providers, checkpoint_generated_at),
+        )
 
     # Each provider has independent credentials, endpoints, and rate limits.
     # Fetch them concurrently so the daily job takes roughly as long as the
     # slowest cloud instead of the sum of all four clouds.
     with ThreadPoolExecutor(max_workers=len(selected)) as executor:
         futures = {
-            executor.submit(fetch_provider, slug): slug for slug in selected
+            executor.submit(fetch_provider_guarded, slug, args.failure_marker): slug
+            for slug in selected
         }
         failed = False
         for future in as_completed(futures):
             slug = futures[future]
             try:
                 fetched[slug] = future.result()
+                providers[slug] = fetched[slug]
+                if args.checkpoint and previous:
+                    atomic_write(
+                        args.checkpoint,
+                        build_catalog(providers, checkpoint_generated_at),
+                    )
             except Exception as error:
                 failed = True
                 print(
@@ -208,22 +332,15 @@ def main() -> int:
 
     # Preserve the requested provider order in both JSON and summaries even
     # though concurrent requests complete in a nondeterministic order.
-    providers = {slug: fetched[slug] for slug in selected}
+    if not previous:
+        providers = {slug: fetched[slug] for slug in selected}
 
     generated_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace(
         "+00:00", "Z"
     )
-    catalog = {
-        "schemaVersion": 1,
-        "generatedAt": generated_at,
-        "providers": providers,
-        "totals": {
-            "providers": len(providers),
-            "uniqueInstanceTypes": sum(
-                len(provider["instances"]) for provider in providers.values()
-            ),
-        },
-    }
+    catalog = build_catalog(providers, generated_at)
+    if args.checkpoint:
+        atomic_write(args.checkpoint, catalog)
     atomic_write(args.output, catalog)
     atomic_write(args.public_output, catalog)
     write_step_summary(catalog)

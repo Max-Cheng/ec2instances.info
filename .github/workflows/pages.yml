@@ -26,6 +26,8 @@ jobs:
         name: Build daily Pages artifact
         runs-on: ubuntu-24.04
         timeout-minutes: 15
+        outputs:
+            publish: ${{ steps.china_cloud_refresh.outputs.publish }}
         steps:
             - uses: actions/checkout@v4
 
@@ -152,7 +154,18 @@ jobs:
                   path: .venv-china-clouds
                   key: china-cloud-venv-v1-${{ runner.os }}-${{ steps.setup_python.outputs.python-version }}-${{ hashFiles('scripts/china_cloud/requirements.txt') }}
 
+            - name: Download previous China cloud catalog
+              if: github.event_name != 'push'
+              run: |
+                  curl --fail --location --retry 3 --retry-all-errors \
+                    --connect-timeout 5 --max-time 30 \
+                    "${{ steps.pages.outputs.base_url }}/data/china-clouds.json?run=${GITHUB_RUN_ID}" \
+                    --output /tmp/china-clouds-previous.json
+                  .venv-china-clouds/bin/python -m scripts.update_china_clouds \
+                    --validate-only /tmp/china-clouds-previous.json
+
             - name: Refresh complete China cloud catalogs
+              id: china_cloud_refresh
               env:
                   PYTHONUNBUFFERED: "1"
                   ALIBABA_CLOUD_ACCESS_KEY_ID: ${{ secrets.ALIBABA_CLOUD_ACCESS_KEY_ID }}
@@ -164,16 +177,49 @@ jobs:
                   HUAWEI_ACCESS_KEY_ID: ${{ secrets.HUAWEI_ACCESS_KEY_ID }}
                   HUAWEI_SECRET_ACCESS_KEY: ${{ secrets.HUAWEI_SECRET_ACCESS_KEY }}
               run: |
+                  checkpoint=/tmp/china-clouds-checkpoint.json
+                  failure_marker=/tmp/china-clouds-provider-failed
+                  collector_args=(
+                    --checkpoint "$checkpoint"
+                    --failure-marker "$failure_marker"
+                  )
+                  if [ "$GITHUB_EVENT_NAME" != "push" ]; then
+                    collector_args+=(--previous /tmp/china-clouds-previous.json)
+                  fi
+
                   status=0
                   timeout --signal=TERM --kill-after=15s 180s \
                     .venv-china-clouds/bin/python -m scripts.update_china_clouds \
+                    "${collector_args[@]}" \
                     || status=$?
-                  if [ "$status" -eq 124 ]; then
-                    echo "::error title=China cloud refresh timed out::Provider APIs did not finish within 180 seconds; keeping the previous Pages deployment."
+                  if [ "$status" -eq 124 ] && [ "$GITHUB_EVENT_NAME" != "push" ]; then
+                    if [ -e "$failure_marker" ]; then
+                      echo "::error title=China cloud provider failed::At least one provider raised an explicit error before the overall timeout."
+                      exit 1
+                    fi
+                    echo "::warning title=China cloud refresh timed out::Publishing only validated provider progress; unfinished providers retain their previous snapshot."
+                  elif [ "$status" -ne 0 ]; then
+                    exit "$status"
                   fi
-                  exit "$status"
+
+                  .venv-china-clouds/bin/python -m scripts.update_china_clouds \
+                    --validate-only "$checkpoint"
+                  install -m 0644 "$checkpoint" \
+                    next/data/regionalClouds.generated.json
+                  install -d next/public/data
+                  install -m 0644 "$checkpoint" \
+                    next/public/data/china-clouds.json
+
+                  publish=true
+                  if [ "$GITHUB_EVENT_NAME" != "push" ] && \
+                     cmp -s /tmp/china-clouds-previous.json "$checkpoint"; then
+                    publish=false
+                    echo "No provider completed with changed data; skipping Pages deployment."
+                  fi
+                  echo "publish=$publish" >> "$GITHUB_OUTPUT"
 
             - name: Upload China cloud data snapshot
+              if: steps.china_cloud_refresh.outputs.publish == 'true'
               uses: actions/upload-artifact@v4
               with:
                   name: china-cloud-catalog-${{ github.run_id }}
@@ -183,6 +229,7 @@ jobs:
                   retention-days: 7
 
             - name: Overlay refreshed catalogs onto Pages shell
+              if: steps.china_cloud_refresh.outputs.publish == 'true'
               run: |
                   test -s next/out/index.html
                   test -f next/out/.nojekyll
@@ -197,6 +244,7 @@ jobs:
                   test "$artifact_kib" -lt 921600
 
             - name: Upload Pages artifact
+              if: steps.china_cloud_refresh.outputs.publish == 'true'
               uses: actions/upload-pages-artifact@v4
               with:
                   path: next/out
@@ -204,6 +252,7 @@ jobs:
     deploy:
         name: Deploy to GitHub Pages
         needs: build
+        if: needs.build.outputs.publish == 'true'
         runs-on: ubuntu-24.04
         environment:
             name: github-pages

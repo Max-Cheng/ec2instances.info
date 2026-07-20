@@ -60,7 +60,11 @@ shell, fetch the four China cloud catalogs concurrently with full pagination,
 and replace only `/data/china-clouds.json`. The China cloud pages load that
 snapshot at runtime, so daily data updates do not spend Actions minutes on a
 second Node install, test suite, or Next.js build. Vantage's production data
-package is downloaded only when a new shell must be built.
+package is downloaded only when a new shell must be built. During a scheduled
+or manual timeout, completed provider checkpoints can still be published while
+unfinished providers retain the previous snapshot; an unchanged checkpoint
+skips deployment. Authentication and data-validation failures still fail the
+workflow.
 
 GitHub Pages limits a published site to 1 GB, while the full export with every
 single-instance detail page is larger than that. The Pages workflow therefore

@@ -12,13 +12,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
+from scripts.china_cloud.common import normalize_on_demand_prices
+
 
 PROVIDER_SLUGS = ("alibaba", "tencent", "volcengine", "huawei")
+PRICE_PROVIDER_SLUGS = {"alibaba", "tencent", "huawei"}
 MINIMUM_INSTANCE_COUNTS = {
     # Conservative floors based on the first complete production snapshot.
     # These are deliberately below normal counts but above one-page/smoke data.
@@ -92,7 +94,12 @@ def redact(error: Exception) -> str:
     return message[:1000] or error.__class__.__name__
 
 
-def validate_provider(slug: str, provider: dict[str, Any]) -> None:
+def validate_provider(
+    slug: str,
+    provider: dict[str, Any],
+    *,
+    require_prices: bool = False,
+) -> None:
     if provider.get("slug") != slug:
         raise ValueError(f"{slug}: provider slug mismatch")
     instances = provider.get("instances")
@@ -122,6 +129,8 @@ def validate_provider(slug: str, provider: dict[str, Any]) -> None:
 
     seen: set[str] = set()
     instances_with_availability = 0
+    priced_instances = 0
+    price_currencies: set[str] = set()
     for instance in instances:
         instance_type = str(instance.get("instanceType") or "")
         if not instance_type or instance_type in seen:
@@ -145,8 +154,36 @@ def validate_provider(slug: str, provider: dict[str, Any]) -> None:
         if regions and zones:
             instances_with_availability += 1
 
+        prices = instance.get("onDemandPrices")
+        if prices is not None:
+            if not isinstance(prices, dict) or not prices:
+                raise ValueError(
+                    f"{slug}/{instance_type}: onDemandPrices must be a non-empty object"
+                )
+            if normalize_on_demand_prices(prices) != prices:
+                raise ValueError(
+                    f"{slug}/{instance_type}: invalid on-demand price data"
+                )
+            unknown_price_regions = set(prices) - set(regions)
+            if unknown_price_regions:
+                raise ValueError(
+                    f"{slug}/{instance_type}: price regions are not in availability: "
+                    f"{sorted(unknown_price_regions)}"
+                )
+            price_currencies.update(
+                str(price["currency"]) for price in prices.values()
+            )
+            priced_instances += 1
+
     if instances_with_availability == 0:
         raise ValueError(f"{slug}: no instance type has regional/AZ availability")
+    if require_prices and slug in PRICE_PROVIDER_SLUGS and priced_instances == 0:
+        raise ValueError(f"{slug}: no public Linux on-demand prices were returned")
+    if len(price_currencies) > 1:
+        raise ValueError(
+            f"{slug}: mixed price currencies are not comparable: "
+            f"{sorted(price_currencies)}"
+        )
 
 
 def build_catalog(
@@ -158,8 +195,17 @@ def build_catalog(
         for slug in PROVIDER_SLUGS
         if slug in providers
     }
+    has_required_prices = all(
+        any(
+            instance.get("onDemandPrices")
+            for instance in ordered.get(slug, {}).get("instances", [])
+        )
+        for slug in PRICE_PROVIDER_SLUGS
+    )
     return {
-        "schemaVersion": 1,
+        # Version 1 remains readable during the first rolling deployment, when
+        # unfinished providers can still come from the legacy no-price snapshot.
+        "schemaVersion": 2 if has_required_prices else 1,
         "generatedAt": generated_at,
         "providers": ordered,
         "totals": {
@@ -172,8 +218,9 @@ def build_catalog(
 
 
 def validate_catalog(catalog: dict[str, Any]) -> None:
-    if catalog.get("schemaVersion") != 1:
-        raise ValueError("catalog: schemaVersion must be 1")
+    schema_version = catalog.get("schemaVersion")
+    if schema_version not in {1, 2}:
+        raise ValueError("catalog: schemaVersion must be 1 or 2")
     generated_at = catalog.get("generatedAt")
     if not isinstance(generated_at, str) or not generated_at.strip():
         raise ValueError("catalog: generatedAt must be a non-empty string")
@@ -187,7 +234,7 @@ def validate_catalog(catalog: dict[str, Any]) -> None:
         provider = providers.get(slug)
         if not isinstance(provider, dict):
             raise ValueError(f"catalog: {slug} provider must be an object")
-        validate_provider(slug, provider)
+        validate_provider(slug, provider, require_prices=schema_version >= 2)
 
     totals = catalog.get("totals")
     if not isinstance(totals, dict):
@@ -228,8 +275,8 @@ def write_step_summary(catalog: dict[str, Any]) -> None:
     lines = [
         "## China cloud catalog refresh",
         "",
-        "| Provider | Unique instance types | Regions | Zones | Skipped regions |",
-        "| --- | ---: | ---: | ---: | ---: |",
+        "| Provider | Unique instance types | Priced types | Regions | Zones | Skipped regions |",
+        "| --- | ---: | ---: | ---: | ---: | ---: |",
     ]
     for slug in PROVIDER_SLUGS:
         provider = catalog["providers"].get(slug)
@@ -237,6 +284,7 @@ def write_step_summary(catalog: dict[str, Any]) -> None:
             continue
         lines.append(
             f"| {slug} | {len(provider['instances'])} | "
+            f"{sum(bool(instance.get('onDemandPrices')) for instance in provider['instances'])} | "
             f"{provider['regionCount']} | {provider['zoneCount']} | "
             f"{len(provider.get('skippedRegions', []))} |"
         )
@@ -249,9 +297,10 @@ def fetch_provider(slug: str) -> dict[str, Any]:
     print(f"{slug}: fetching full catalog", flush=True)
     module = importlib.import_module(f"scripts.china_cloud.providers.{slug}")
     provider = module.fetch()
-    validate_provider(slug, provider)
+    validate_provider(slug, provider, require_prices=True)
     print(
         f"{slug}: {len(provider['instances'])} unique instance types, "
+        f"{sum(bool(instance.get('onDemandPrices')) for instance in provider['instances'])} priced, "
         f"{provider['regionCount']} regions, {provider['zoneCount']} zones",
         flush=True,
     )
@@ -288,6 +337,8 @@ def main() -> int:
     selected = tuple(args.providers or PROVIDER_SLUGS)
     fetched: dict[str, Any] = {}
     previous = load_catalog(args.previous) if args.previous else None
+    if args.previous:
+        os.environ["CHINA_CLOUD_PREVIOUS_CATALOG"] = str(args.previous)
     providers: dict[str, Any] = dict(previous["providers"]) if previous else {}
     checkpoint_generated_at = str(previous["generatedAt"]) if previous else ""
 

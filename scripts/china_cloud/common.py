@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 from collections.abc import Iterable
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 
@@ -20,6 +21,8 @@ CATEGORIES = {
 ARCHITECTURES = {"x86_64", "arm64", "unknown"}
 
 EMPTY_TEXT = {"", "unknown", "varies by instance type", "not published"}
+
+PRICE_CURRENCIES = {"CNY", "USD"}
 
 
 def require_env(*names: str) -> tuple[str, ...]:
@@ -123,6 +126,40 @@ def family_from_instance_type(instance_type: str) -> str:
     return match.group(1) if match else value
 
 
+def normalize_on_demand_prices(value: Any) -> dict[str, dict[str, str]]:
+    """Normalize positive per-instance hourly prices keyed by real region ID."""
+
+    if not isinstance(value, dict):
+        return {}
+
+    normalized: dict[str, dict[str, str]] = {}
+    for raw_region, raw_price in value.items():
+        region = str(raw_region or "").strip()
+        if not region or not isinstance(raw_price, dict):
+            continue
+
+        currency = str(raw_price.get("currency") or "").upper().strip()
+        unit = str(raw_price.get("unit") or "").lower().strip()
+        try:
+            amount = Decimal(str(raw_price.get("amount")))
+        except (InvalidOperation, TypeError, ValueError):
+            continue
+        if (
+            not amount.is_finite()
+            or amount <= 0
+            or currency not in PRICE_CURRENCIES
+            or unit != "hour"
+        ):
+            continue
+
+        normalized[region] = {
+            "amount": format(amount.normalize(), "f"),
+            "currency": currency,
+            "unit": "hour",
+        }
+    return dict(sorted(normalized.items()))
+
+
 def merge_instances(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     merged: dict[str, dict[str, Any]] = {}
     for raw in records:
@@ -160,6 +197,9 @@ def merge_instances(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
             "regions": sorted({str(item) for item in raw.get("regions", []) if item}),
             "zones": sorted({str(item) for item in raw.get("zones", []) if item}),
         }
+        prices = normalize_on_demand_prices(raw.get("onDemandPrices"))
+        if prices:
+            record["onDemandPrices"] = prices
 
         current = merged.get(instance_type)
         if current is None:
@@ -168,6 +208,18 @@ def merge_instances(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
 
         current["regions"] = sorted(set(current["regions"]) | set(record["regions"]))
         current["zones"] = sorted(set(current["zones"]) | set(record["zones"]))
+        current_prices = current.setdefault("onDemandPrices", {})
+        for region, price in record.get("onDemandPrices", {}).items():
+            existing = current_prices.get(region)
+            if existing is None:
+                current_prices[region] = price
+                continue
+            if existing["currency"] == price["currency"] and Decimal(
+                price["amount"]
+            ) < Decimal(existing["amount"]):
+                current_prices[region] = price
+        if not current_prices:
+            current.pop("onDemandPrices", None)
         for key in (
             "family",
             "familyName",

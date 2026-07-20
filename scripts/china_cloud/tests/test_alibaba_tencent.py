@@ -130,6 +130,25 @@ class AlibabaProviderTests(unittest.TestCase):
                         ]
                     }
                 }
+            if action == "DescribePrice":
+                self.assertEqual(client, "cn-a")
+                return {
+                    "PriceInfo": {
+                        "Price": {
+                            "Currency": "CNY",
+                            "OriginalPrice": 0.55,
+                            "DetailInfos": {
+                                "DetailInfo": [
+                                    {
+                                        "Resource": "instanceType",
+                                        "OriginalPrice": "0.4200",
+                                    },
+                                    {"Resource": "bandwidth", "OriginalPrice": 0},
+                                ]
+                            },
+                        },
+                    }
+                }
             self.fail(f"unexpected Alibaba action: {action}")
 
         with (
@@ -139,6 +158,8 @@ class AlibabaProviderTests(unittest.TestCase):
                 return_value=("ali-id", "ali-secret"),
             ) as require_env,
             patch.object(alibaba, "_make_client", side_effect=fake_client),
+            patch.object(alibaba, "_make_price_client", side_effect=fake_client),
+            patch.object(alibaba, "_load_cached_prices", return_value={}),
             patch.object(alibaba, "_invoke", side_effect=fake_invoke),
         ):
             result = alibaba.fetch()
@@ -162,6 +183,16 @@ class AlibabaProviderTests(unittest.TestCase):
         self.assertEqual(
             by_type["ecs.g8i.large"]["localStorage"],
             "2 x 100 GiB local_ssd",
+        )
+        self.assertEqual(
+            by_type["ecs.g8i.large"]["onDemandPrices"],
+            {
+                "cn-a": {
+                    "amount": "0.42",
+                    "currency": "CNY",
+                    "unit": "hour",
+                }
+            },
         )
         self.assertEqual(by_type["ecs.gn7.large"]["regions"], [])
         self.assertEqual(by_type["ecs.gn7.large"]["category"], "Accelerated computing")
@@ -191,6 +222,124 @@ class AlibabaProviderTests(unittest.TestCase):
         self.assertTrue(
             all("IoOptimized" not in parameters for _, _, parameters in availability_calls)
         )
+        price_calls = [entry for entry in calls if entry[1] == "DescribePrice"]
+        self.assertEqual(
+            price_calls,
+            [
+                (
+                    "cn-a",
+                    "DescribePrice",
+                    {
+                        "RegionId": "cn-a",
+                        "ResourceType": "instance",
+                        "InstanceType": "ecs.g8i.large",
+                        "PriceUnit": "Hour",
+                        "Period": 1,
+                        "InstanceNetworkType": "vpc",
+                        "InternetChargeType": "PayByTraffic",
+                        "InternetMaxBandwidthOut": 0,
+                        "SpotStrategy": "NoSpot",
+                    },
+                )
+            ],
+        )
+
+    def test_price_enrichment_retains_real_cached_region_and_is_non_fatal(self) -> None:
+        availability = {
+            "ecs.c8i.large": {"regions": {"cn-a", "cn-b"}, "zones": set()},
+            "ecs.g8i.large": {"regions": {"cn-b"}, "zones": set()},
+            "ecs.offline.large": {"regions": set(), "zones": set()},
+        }
+        cached = {
+            "ecs.c8i.large": {
+                "cn-b": {"amount": "1.200", "currency": "CNY", "unit": "hour"},
+                "cn-old": {"amount": "0.1", "currency": "CNY", "unit": "hour"},
+            }
+        }
+        calls: list[tuple[str, str]] = []
+
+        def fake_invoke(
+            client: str, action: str, **parameters: object
+        ) -> dict[str, object]:
+            self.assertEqual(action, "DescribePrice")
+            instance_type = str(parameters["InstanceType"])
+            calls.append((instance_type, client))
+            if instance_type == "ecs.g8i.large":
+                raise RuntimeError("PriceNotFound")
+            return {
+                "PriceInfo": {
+                    "Price": {"Currency": "CNY", "OriginalPrice": 1.1}
+                }
+            }
+
+        with (
+            patch.object(
+                alibaba,
+                "_make_price_client",
+                side_effect=lambda _key, _secret, region: region,
+            ),
+            patch.object(alibaba, "_invoke", side_effect=fake_invoke),
+        ):
+            prices = alibaba._fetch_on_demand_prices(
+                "ali-id",
+                "ali-secret",
+                availability,
+                cached_prices=cached,
+                time_budget_seconds=2,
+                queries_per_second=10_000,
+                workers=2,
+                day_ordinal=1,
+            )
+
+        self.assertEqual(set(calls), {("ecs.c8i.large", "cn-a"), ("ecs.g8i.large", "cn-b")})
+        self.assertEqual(
+            prices,
+            {
+                "ecs.c8i.large": {
+                    "cn-a": {
+                        "amount": "1.1",
+                        "currency": "CNY",
+                        "unit": "hour",
+                    },
+                    "cn-b": {
+                        "amount": "1.2",
+                        "currency": "CNY",
+                        "unit": "hour",
+                    }
+                }
+            },
+        )
+
+    def test_extract_price_requires_positive_supported_currency_original_amount(self) -> None:
+        self.assertEqual(
+            alibaba._extract_on_demand_price(
+                {
+                    "PriceInfo": {
+                        "Price": {
+                            "Currency": "CNY",
+                            "OriginalPrice": 10,
+                            "DetailInfos": {
+                                "DetailInfo": [
+                                    {"Resource": "systemDisk", "OriginalPrice": 9},
+                                    {
+                                        "Resource": "instanceType",
+                                        "OriginalPrice": "1.2500",
+                                    },
+                                ]
+                            },
+                        },
+                    }
+                }
+            ),
+            {"amount": "1.25", "currency": "CNY", "unit": "hour"},
+        )
+        self.assertEqual(
+            alibaba._extract_on_demand_price(
+                {"PriceInfo": {"Price": {"Currency": "USD", "OriginalPrice": 1}}}
+            ),
+            {"amount": "1", "currency": "USD", "unit": "hour"},
+        )
+        self.assertEqual(alibaba._amount_string(10), "10")
 
     def test_repeated_pagination_token_fails_instead_of_truncating(self) -> None:
         with patch.object(
@@ -203,6 +352,73 @@ class AlibabaProviderTests(unittest.TestCase):
 
 
 class TencentProviderTests(unittest.TestCase):
+    def test_uses_lowest_public_hourly_price_across_zones(self) -> None:
+        prices = tencent._regional_on_demand_prices(
+            [
+                {
+                    "Zone": "ap-a-1",
+                    "InstanceType": "SA2.MEDIUM4",
+                    "Status": "SELL",
+                    "StatusCategory": "EnoughStock",
+                    "Price": {
+                        "UnitPrice": "0.4200",
+                        "UnitPriceDiscount": 0.21,
+                        "ChargeUnit": "HOUR",
+                    },
+                },
+                {
+                    "Zone": "ap-a-2",
+                    "InstanceType": "SA2.MEDIUM4",
+                    "Status": "SELL",
+                    "StatusCategory": "EnoughStock",
+                    "Price": {
+                        "UnitPrice": 0.37,
+                        "UnitPriceDiscount": 0.18,
+                        "ChargeUnit": "hour",
+                    },
+                },
+                {
+                    "Zone": "ap-a-3",
+                    "InstanceType": "SA2.MEDIUM4",
+                    "Status": "SELL",
+                    "StatusCategory": "EnoughStock",
+                    "Price": {
+                        "UnitPrice": 0,
+                        "OriginalPrice": 59,
+                        "ChargeUnit": "HOUR",
+                    },
+                },
+                {
+                    "Zone": "ap-a-1",
+                    "InstanceType": "MA2.MEDIUM8",
+                    "Status": "SELL",
+                    "StatusCategory": "EnoughStock",
+                    "Price": {"UnitPrice": 8, "ChargeUnit": "GB"},
+                },
+                {
+                    "Zone": "ap-a-1",
+                    "InstanceType": "SOLD.OUT",
+                    "Status": "SOLD_OUT",
+                    "StatusCategory": "WithoutStock",
+                    "Price": {"UnitPrice": 1, "ChargeUnit": "HOUR"},
+                },
+            ],
+            "ap-a",
+        )
+
+        self.assertEqual(
+            prices,
+            {
+                "SA2.MEDIUM4": {
+                    "ap-a": {
+                        "amount": "0.37",
+                        "currency": "CNY",
+                        "unit": "hour",
+                    }
+                }
+            },
+        )
+
     def test_fetch_enumerates_every_region_and_merges_zone_availability(self) -> None:
         calls: list[tuple[object, str, dict[str, object]]] = []
 
@@ -278,6 +494,11 @@ class TencentProviderTests(unittest.TestCase):
                         "Frequency": 2.6,
                         "InstanceBandwidth": 3,
                         "InstancePps": 30,
+                        "Price": {
+                            "UnitPrice": 0.42 if region == "ap-a" else 0.45,
+                            "UnitPriceDiscount": 0.21,
+                            "ChargeUnit": "HOUR",
+                        },
                     }
                 ]
                 if region == "ap-a":
@@ -329,6 +550,11 @@ class TencentProviderTests(unittest.TestCase):
                 side_effect=lambda secret_id, secret_key, region: region,
             ) as make_cvm_client,
             patch.object(tencent, "_call", side_effect=fake_call),
+            patch.object(
+                tencent,
+                "provider_result",
+                wraps=tencent.provider_result,
+            ) as provider_result,
         ):
             result = tencent.fetch()
 
@@ -355,6 +581,18 @@ class TencentProviderTests(unittest.TestCase):
         self.assertEqual(standard["processor"], "AMD EPYC @ 2.6 GHz")
         self.assertEqual(
             standard["networkPerformance"], "Up to 3 Gbps; 300 Kpps"
+        )
+        raw_records = provider_result.call_args.args[1]
+        raw_standard_prices: dict[str, object] = {}
+        for record in raw_records:
+            if record["instanceType"] == "SA2.MEDIUM4":
+                raw_standard_prices.update(record.get("onDemandPrices", {}))
+        self.assertEqual(
+            raw_standard_prices,
+            {
+                "ap-a": {"amount": "0.42", "currency": "CNY", "unit": "hour"},
+                "ap-b": {"amount": "0.45", "currency": "CNY", "unit": "hour"},
+            },
         )
         self.assertEqual(by_type["GN7.2XLARGE8"]["regions"], [])
         self.assertEqual(by_type["GN7.2XLARGE8"]["category"], "Accelerated computing")

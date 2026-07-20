@@ -34,11 +34,16 @@ def instance(instance_type: str) -> dict[str, object]:
 
 
 def provider(slug: str, version: str = "old") -> dict[str, object]:
+    item = instance(f"{slug}.{version}")
+    if slug in update_china_clouds.PRICE_PROVIDER_SLUGS:
+        item["onDemandPrices"] = {
+            "region-1": {"amount": "0.25", "currency": "CNY", "unit": "hour"}
+        }
     return {
         "slug": slug,
         "regionCount": 1,
         "zoneCount": 1,
-        "instances": [instance(f"{slug}.{version}")],
+        "instances": [item],
     }
 
 
@@ -82,6 +87,47 @@ class UpdateChinaCloudsTests(unittest.TestCase):
         value["totals"]["uniqueInstanceTypes"] = 99
         with self.assertRaisesRegex(ValueError, "instance total mismatch"):
             update_china_clouds.validate_catalog(value)
+
+    def test_validate_provider_rejects_missing_or_misattributed_prices(self) -> None:
+        value = provider("alibaba")
+        value["instances"][0].pop("onDemandPrices")
+        with self.assertRaisesRegex(ValueError, "no public Linux on-demand prices"):
+            update_china_clouds.validate_provider(
+                "alibaba", value, require_prices=True
+            )
+
+        value = provider("alibaba")
+        value["instances"][0]["onDemandPrices"] = {
+            "other-region": {
+                "amount": "0.25",
+                "currency": "CNY",
+                "unit": "hour",
+            }
+        }
+        with self.assertRaisesRegex(ValueError, "price regions are not in availability"):
+            update_china_clouds.validate_provider("alibaba", value)
+
+    def test_schema_one_legacy_catalog_can_seed_the_price_rollout(self) -> None:
+        value = catalog()
+        value["schemaVersion"] = 1
+        for slug in update_china_clouds.PRICE_PROVIDER_SLUGS:
+            value["providers"][slug]["instances"][0].pop("onDemandPrices")
+        update_china_clouds.validate_catalog(value)
+
+        value["schemaVersion"] = 2
+        with self.assertRaisesRegex(ValueError, "no public Linux on-demand prices"):
+            update_china_clouds.validate_catalog(value)
+
+    def test_validate_provider_rejects_mixed_price_currencies(self) -> None:
+        value = provider("alibaba")
+        second = instance("alibaba.second")
+        second["onDemandPrices"] = {
+            "region-1": {"amount": "0.04", "currency": "USD", "unit": "hour"}
+        }
+        value["instances"].append(second)
+
+        with self.assertRaisesRegex(ValueError, "mixed price currencies"):
+            update_china_clouds.validate_provider("alibaba", value)
 
     def test_success_writes_valid_checkpoint_and_both_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

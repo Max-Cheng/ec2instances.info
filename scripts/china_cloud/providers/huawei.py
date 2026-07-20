@@ -4,6 +4,7 @@ import json
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from scripts.china_cloud.common import (
@@ -18,6 +19,12 @@ from scripts.china_cloud.common import (
 PAGE_SIZE = 1000
 IAM_REGION = "cn-north-4"
 IAM_ENDPOINT = "https://iam.cn-north-4.myhuaweicloud.com"
+BSS_REGION = "cn-north-1"
+BSS_ENDPOINT = "https://bss.myhuaweicloud.com"
+PRICE_BATCH_SIZE = 100
+ECS_CLOUD_SERVICE_TYPE = "hws.service.type.ec2"
+ECS_RESOURCE_TYPE = "hws.resource.type.vm"
+HOURLY_USAGE_MEASURE_ID = 4
 SOURCE_URL = (
     "https://support.huaweicloud.com/api-ecs/zh-cn_topic_0020212656.html"
 )
@@ -27,6 +34,7 @@ SOURCE_URL = (
 AVAILABLE_STATES = {"normal", "promotion", "obt"}
 NORMAL_CHARGE_MODES = {"demand", "period"}
 HTTP_TIMEOUT_SECONDS = (5, 20)
+PRICE_HTTP_TIMEOUT_SECONDS = (3, 8)
 
 PERFORMANCE_NAMES = {
     "normal": "General-purpose",
@@ -78,10 +86,14 @@ class _HuaweiSdk:
     Region: Any
     IamClient: Any
     EcsClient: Any
+    BssClient: Any
     KeystoneListRegionsRequest: Any
     KeystoneListAuthProjectsRequest: Any
     ListFlavorsRequest: Any
     ListServerAzInfoRequest: Any
+    ListOnDemandResourceRatingsRequest: Any
+    RateOnDemandReq: Any
+    DemandProductInfo: Any
 
 
 def _load_sdk() -> _HuaweiSdk:
@@ -93,6 +105,12 @@ def _load_sdk() -> _HuaweiSdk:
             GlobalCredentials,
         )
         from huaweicloudsdkcore.region.region import Region
+        from huaweicloudsdkbss.v2 import (
+            BssClient,
+            DemandProductInfo,
+            ListOnDemandResourceRatingsRequest,
+            RateOnDemandReq,
+        )
         from huaweicloudsdkecs.v2 import (
             EcsClient,
             ListFlavorsRequest,
@@ -106,7 +124,7 @@ def _load_sdk() -> _HuaweiSdk:
     except ModuleNotFoundError as exc:  # pragma: no cover - depends on runtime
         raise RuntimeError(
             "Huawei catalog collection requires huaweicloudsdkcore, "
-            "huaweicloudsdkecs, and huaweicloudsdkiam"
+            "huaweicloudsdkbss, huaweicloudsdkecs, and huaweicloudsdkiam"
         ) from exc
 
     return _HuaweiSdk(
@@ -115,10 +133,14 @@ def _load_sdk() -> _HuaweiSdk:
         Region=Region,
         IamClient=IamClient,
         EcsClient=EcsClient,
+        BssClient=BssClient,
         KeystoneListRegionsRequest=KeystoneListRegionsRequest,
         KeystoneListAuthProjectsRequest=KeystoneListAuthProjectsRequest,
         ListFlavorsRequest=ListFlavorsRequest,
         ListServerAzInfoRequest=ListServerAzInfoRequest,
+        ListOnDemandResourceRatingsRequest=ListOnDemandResourceRatingsRequest,
+        RateOnDemandReq=RateOnDemandReq,
+        DemandProductInfo=DemandProductInfo,
     )
 
 
@@ -157,6 +179,20 @@ def _build_ecs_client(
         .with_credentials(credentials)
         .with_region(region)
         .with_http_config(HttpConfig(timeout=HTTP_TIMEOUT_SECONDS))
+        .build()
+    )
+
+
+def _build_bss_client(access_key: str, secret_key: str, sdk: _HuaweiSdk) -> Any:
+    from huaweicloudsdkcore.http.http_config import HttpConfig
+
+    credentials = sdk.GlobalCredentials(access_key, secret_key)
+    region = sdk.Region(BSS_REGION, BSS_ENDPOINT)
+    return (
+        sdk.BssClient.new_builder()
+        .with_credentials(credentials)
+        .with_region(region)
+        .with_http_config(HttpConfig(timeout=PRICE_HTTP_TIMEOUT_SECONDS))
         .build()
     )
 
@@ -278,6 +314,93 @@ def _list_flavors(client: Any, sdk: _HuaweiSdk) -> Iterable[Any]:
             raise RuntimeError("Huawei ECS flavor pagination did not advance")
         seen_markers.add(next_marker)
         marker = next_marker
+
+
+def _public_price_amount(value: Any) -> str | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        amount = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+    if not amount.is_finite() or amount <= 0:
+        return None
+    return format(amount.normalize(), "f")
+
+
+def _regional_on_demand_prices(
+    client: Any,
+    sdk: _HuaweiSdk,
+    project_id: str,
+    region_id: str,
+    records: Iterable[Mapping[str, Any]],
+) -> dict[str, dict[str, dict[str, str]]]:
+    """Query public Linux hourly prices for sellable flavors in one region."""
+
+    instance_types = sorted(
+        {
+            str(record.get("instanceType") or "").strip()
+            for record in records
+            if region_id in (record.get("regions") or [])
+            and str(record.get("instanceType") or "").strip()
+        }
+    )
+    prices: dict[str, dict[str, dict[str, str]]] = {}
+
+    for offset in range(0, len(instance_types), PRICE_BATCH_SIZE):
+        batch = instance_types[offset : offset + PRICE_BATCH_SIZE]
+        instance_type_by_id = {
+            str(index): instance_type
+            for index, instance_type in enumerate(batch, start=1)
+        }
+        product_infos = [
+            sdk.DemandProductInfo(
+                id=request_id,
+                cloud_service_type=ECS_CLOUD_SERVICE_TYPE,
+                resource_type=ECS_RESOURCE_TYPE,
+                resource_spec=f"{instance_type}.linux",
+                region=region_id,
+                usage_factor="Duration",
+                usage_value=Decimal("1"),
+                usage_measure_id=HOURLY_USAGE_MEASURE_ID,
+                subscription_num=1,
+            )
+            for request_id, instance_type in instance_type_by_id.items()
+        ]
+        body = sdk.RateOnDemandReq(
+            project_id=project_id,
+            inquiry_precision=1,
+            product_infos=product_infos,
+        )
+        response = client.list_on_demand_resource_ratings(
+            sdk.ListOnDemandResourceRatingsRequest(body=body)
+        )
+
+        currency = str(_value(response, "currency", "") or "CNY").upper()
+        if currency != "CNY":
+            raise RuntimeError(
+                f"Huawei BSS returned unexpected pricing currency {currency!r}"
+            )
+
+        for result in _value(response, "product_rating_results", []) or []:
+            request_id = str(_value(result, "id", "") or "")
+            instance_type = instance_type_by_id.get(request_id)
+            # Use the public list price only. `amount`, `discount_amount`, and
+            # `discount_rating_results` are account-specific and intentionally
+            # ignored even when the caller can view them.
+            amount = _public_price_amount(
+                _value(result, "official_website_amount")
+            )
+            if instance_type and amount is not None:
+                prices[instance_type] = {
+                    region_id: {
+                        "amount": amount,
+                        "currency": "CNY",
+                        "unit": "hour",
+                    }
+                }
+
+    return prices
 
 
 def _parse_zone_states(value: Any) -> dict[str, str]:
@@ -487,6 +610,7 @@ def fetch() -> dict[str, Any]:
     )
     sdk = _load_sdk()
     iam_client = _build_iam_client(access_key, secret_key, sdk)
+    bss_client = _build_bss_client(access_key, secret_key, sdk)
 
     region_response = iam_client.keystone_list_regions(
         sdk.KeystoneListRegionsRequest()
@@ -518,6 +642,16 @@ def fetch() -> dict[str, Any]:
                 record = _record_for_flavor(flavor, region_id, zone_ids)
                 if record is not None:
                     region_records.append(record)
+            regional_prices = _regional_on_demand_prices(
+                bss_client,
+                sdk,
+                project_id,
+                region_id,
+                region_records,
+            )
+            for record in region_records:
+                if price := regional_prices.get(record["instanceType"]):
+                    record["onDemandPrices"] = price
         except Exception as error:
             if not _is_region_forbidden(error):
                 raise

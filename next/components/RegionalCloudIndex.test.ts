@@ -189,7 +189,7 @@ describe("regional cloud index", () => {
             instance("ecs.runtime.xlarge", ["cn-runtime-2"]),
         ];
         const snapshot: GeneratedRegionalCloudCatalog = {
-            schemaVersion: 1,
+            schemaVersion: 2,
             generatedAt: "2026-07-17T10:00:00Z",
             providers: {
                 alibaba: {

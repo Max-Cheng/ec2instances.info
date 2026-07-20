@@ -155,14 +155,23 @@ jobs:
                   key: china-cloud-venv-v1-${{ runner.os }}-${{ steps.setup_python.outputs.python-version }}-${{ hashFiles('scripts/china_cloud/requirements.txt') }}
 
             - name: Download previous China cloud catalog
-              if: github.event_name != 'push'
+              id: previous_china_cloud_catalog
               run: |
-                  curl --fail --location --retry 3 --retry-all-errors \
-                    --connect-timeout 5 --max-time 30 \
-                    "${{ steps.pages.outputs.base_url }}/data/china-clouds.json?run=${GITHUB_RUN_ID}" \
-                    --output /tmp/china-clouds-previous.json
-                  .venv-china-clouds/bin/python -m scripts.update_china_clouds \
-                    --validate-only /tmp/china-clouds-previous.json
+                  previous=/tmp/china-clouds-previous.json
+                  if curl --fail --location --retry 3 --retry-all-errors \
+                      --connect-timeout 5 --max-time 30 \
+                      "${{ steps.pages.outputs.base_url }}/data/china-clouds.json?run=${GITHUB_RUN_ID}" \
+                      --output "$previous"; then
+                    .venv-china-clouds/bin/python -m scripts.update_china_clouds \
+                      --validate-only "$previous"
+                    echo "available=true" >> "$GITHUB_OUTPUT"
+                  elif [ "$GITHUB_EVENT_NAME" = "push" ]; then
+                    rm -f "$previous"
+                    echo "::warning title=No previous China cloud catalog::Starting this push without cached provider data."
+                    echo "available=false" >> "$GITHUB_OUTPUT"
+                  else
+                    exit 1
+                  fi
 
             - name: Refresh complete China cloud catalogs
               id: china_cloud_refresh
@@ -183,7 +192,7 @@ jobs:
                     --checkpoint "$checkpoint"
                     --failure-marker "$failure_marker"
                   )
-                  if [ "$GITHUB_EVENT_NAME" != "push" ]; then
+                  if [ "${{ steps.previous_china_cloud_catalog.outputs.available }}" = "true" ]; then
                     collector_args+=(--previous /tmp/china-clouds-previous.json)
                   fi
 
@@ -192,10 +201,14 @@ jobs:
                     .venv-china-clouds/bin/python -m scripts.update_china_clouds \
                     "${collector_args[@]}" \
                     || status=$?
-                  if [ "$status" -eq 124 ] && [ "$GITHUB_EVENT_NAME" != "push" ]; then
+                  if [ "$status" -eq 124 ]; then
                     if [ -e "$failure_marker" ]; then
                       echo "::error title=China cloud provider failed::At least one provider raised an explicit error before the overall timeout."
                       exit 1
+                    fi
+                    if [ ! -s "$checkpoint" ]; then
+                      echo "::error title=China cloud refresh timed out::No valid previous catalog or completed provider checkpoint is available."
+                      exit "$status"
                     fi
                     echo "::warning title=China cloud refresh timed out::Publishing only validated provider progress; unfinished providers retain their previous snapshot."
                   elif [ "$status" -ne 0 ]; then

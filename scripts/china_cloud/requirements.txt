@@ -2,5 +2,6 @@ aliyun-python-sdk-core==2.16.0
 aliyun-python-sdk-ecs==4.24.83
 tencentcloud-sdk-python==3.1.135
 volcengine-python-sdk==5.0.41
+huaweicloudsdkbss==3.1.206
 huaweicloudsdkecs==3.1.206
 huaweicloudsdkiam==3.1.206

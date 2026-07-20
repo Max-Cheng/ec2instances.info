@@ -51,6 +51,14 @@ describe("regional cloud catalog data", () => {
                         instance.zones?.length,
                     );
                 }
+                for (const [region, price] of Object.entries(
+                    instance.onDemandPrices ?? {},
+                )) {
+                    expect(instance.regions).toContain(region);
+                    expect(Number(price.amount)).toBeGreaterThan(0);
+                    expect(["CNY", "USD"]).toContain(price.currency);
+                    expect(price.unit).toBe("hour");
+                }
             }
 
             if (provider.dataSource === "api") {

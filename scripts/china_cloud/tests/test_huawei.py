@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import unittest
 from contextlib import redirect_stdout
+from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -19,6 +20,9 @@ FAKE_SDK = SimpleNamespace(
     KeystoneListAuthProjectsRequest=FakeRequest,
     ListFlavorsRequest=FakeRequest,
     ListServerAzInfoRequest=FakeRequest,
+    ListOnDemandResourceRatingsRequest=FakeRequest,
+    RateOnDemandReq=FakeRequest,
+    DemandProductInfo=FakeRequest,
 )
 
 
@@ -78,6 +82,39 @@ class FakeEcsClient:
     def list_flavors(self, request):
         self.markers.append(getattr(request, "marker", None))
         return SimpleNamespace(flavors=self.pages[len(self.markers) - 1])
+
+
+class FakeBssClient:
+    def __init__(self, prices=None, *, currency="CNY"):
+        self.prices = prices or {}
+        self.currency = currency
+        self.requests = []
+
+    def list_on_demand_resource_ratings(self, request):
+        self.requests.append(request)
+        results = []
+        for product in reversed(request.body.product_infos):
+            instance_type = product.resource_spec.removesuffix(".linux")
+            amount = self.prices.get((product.region, instance_type))
+            if amount is None:
+                continue
+            results.append(
+                SimpleNamespace(
+                    id=product.id,
+                    # Deliberately different account prices prove that the
+                    # provider reads official_website_amount only.
+                    amount=Decimal("0.01"),
+                    discount_amount=Decimal("999"),
+                    official_website_amount=Decimal(str(amount)),
+                    measure_id=1,
+                    discount_rating_results=[object()],
+                )
+            )
+        return SimpleNamespace(
+            currency=self.currency,
+            measure_id=1,
+            product_rating_results=results,
+        )
 
 
 class FakeClientRequestException(Exception):
@@ -170,6 +207,88 @@ class HuaweiProviderTest(unittest.TestCase):
             huawei._region_projects(regions, projects),
             [("cn-north-4", "p-north")],
         )
+
+    def test_prices_linux_flavors_in_batches_of_at_most_100(self):
+        records = [
+            {
+                "instanceType": f"c7.{index}.2",
+                "regions": ["cn-north-4"],
+            }
+            for index in range(205)
+        ]
+        records.append({"instanceType": "soldout.large", "regions": []})
+        prices = {
+            ("cn-north-4", f"c7.{index}.2"): f"{index + 1}.1200"
+            for index in range(205)
+        }
+        prices[("cn-north-4", "soldout.large")] = "999"
+        client = FakeBssClient(prices)
+
+        result = huawei._regional_on_demand_prices(
+            client,
+            FAKE_SDK,
+            "project-north",
+            "cn-north-4",
+            records,
+        )
+
+        self.assertEqual(
+            [len(request.body.product_infos) for request in client.requests],
+            [100, 100, 5],
+        )
+        for request in client.requests:
+            self.assertEqual(request.body.project_id, "project-north")
+            self.assertEqual(request.body.inquiry_precision, 1)
+            self.assertLessEqual(len(request.body.product_infos), 100)
+            self.assertEqual(
+                len({product.id for product in request.body.product_infos}),
+                len(request.body.product_infos),
+            )
+            for product in request.body.product_infos:
+                self.assertEqual(
+                    product.cloud_service_type,
+                    "hws.service.type.ec2",
+                )
+                self.assertEqual(product.resource_type, "hws.resource.type.vm")
+                self.assertTrue(product.resource_spec.endswith(".linux"))
+                self.assertEqual(product.region, "cn-north-4")
+                self.assertEqual(product.usage_factor, "Duration")
+                self.assertEqual(product.usage_value, Decimal("1"))
+                self.assertEqual(product.usage_measure_id, 4)
+                self.assertEqual(product.subscription_num, 1)
+
+        self.assertEqual(len(result), 205)
+        self.assertEqual(
+            result["c7.0.2"],
+            {
+                "cn-north-4": {
+                    "amount": "1.12",
+                    "currency": "CNY",
+                    "unit": "hour",
+                }
+            },
+        )
+        self.assertNotIn("soldout.large", result)
+
+    def test_rejects_non_cny_price_response(self):
+        client = FakeBssClient(
+            {("cn-north-4", "c7.large.2"): "0.42"},
+            currency="USD",
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "unexpected pricing currency"):
+            huawei._regional_on_demand_prices(
+                client,
+                FAKE_SDK,
+                "project-north",
+                "cn-north-4",
+                [
+                    {
+                        "instanceType": "c7.large.2",
+                        "regions": ["cn-north-4"],
+                    }
+                ],
+            )
 
     def test_availability_uses_region_default_and_az_overrides(self):
         extra = {
@@ -321,6 +440,15 @@ class HuaweiProviderTest(unittest.TestCase):
                 [[shared_north, memory], []],
             ),
         }
+        bss_client = FakeBssClient(
+            {
+                ("cn-east-3", "c7.large.2"): "0.4200",
+                ("cn-north-4", "c7.large.2"): "0.4500",
+                ("cn-north-4", "m7.xlarge.8"): "0.8800",
+                # Sold-out flavors are not sent for pricing.
+                ("cn-east-3", "s7.large.4"): "999",
+            }
+        )
 
         with (
             patch.object(
@@ -333,6 +461,11 @@ class HuaweiProviderTest(unittest.TestCase):
                 huawei,
                 "_build_iam_client",
                 return_value=FakeIamClient(regions, projects),
+            ),
+            patch.object(
+                huawei,
+                "_build_bss_client",
+                return_value=bss_client,
             ),
             patch.object(
                 huawei,
@@ -364,7 +497,32 @@ class HuaweiProviderTest(unittest.TestCase):
             ["cn-east-3a", "cn-north-4a"],
         )
         self.assertEqual(by_type["c7.large.2"]["category"], "Compute optimized")
+        self.assertEqual(
+            by_type["c7.large.2"]["onDemandPrices"],
+            {
+                "cn-east-3": {
+                    "amount": "0.42",
+                    "currency": "CNY",
+                    "unit": "hour",
+                },
+                "cn-north-4": {
+                    "amount": "0.45",
+                    "currency": "CNY",
+                    "unit": "hour",
+                },
+            },
+        )
         self.assertEqual(by_type["m7.xlarge.8"]["category"], "Memory optimized")
+        self.assertEqual(
+            by_type["m7.xlarge.8"]["onDemandPrices"],
+            {
+                "cn-north-4": {
+                    "amount": "0.88",
+                    "currency": "CNY",
+                    "unit": "hour",
+                }
+            },
+        )
         self.assertEqual(by_type["s7.large.4"]["regions"], [])
         self.assertEqual(by_type["s7.large.4"]["zones"], [])
         self.assertEqual(clients["cn-east-3"].markers, [None, "s7.large.4"])
@@ -405,6 +563,11 @@ class HuaweiProviderTest(unittest.TestCase):
             ),
             patch.object(
                 huawei,
+                "_build_bss_client",
+                return_value=FakeBssClient(),
+            ),
+            patch.object(
+                huawei,
                 "_build_ecs_client",
                 side_effect=lambda _ak, _sk, _project, region, _sdk: clients[
                     region
@@ -442,6 +605,11 @@ class HuaweiProviderTest(unittest.TestCase):
                 huawei,
                 "_build_iam_client",
                 return_value=FakeIamClient(regions, projects),
+            ),
+            patch.object(
+                huawei,
+                "_build_bss_client",
+                return_value=FakeBssClient(),
             ),
             patch.object(
                 huawei,

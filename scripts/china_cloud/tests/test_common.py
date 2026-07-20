@@ -6,6 +6,7 @@ from scripts.china_cloud.common import (
     classify_category,
     format_packet_rate,
     merge_instances,
+    normalize_on_demand_prices,
     normalize_architecture,
 )
 
@@ -27,6 +28,9 @@ class CommonTests(unittest.TestCase):
                 "sourceUrl": "https://example.invalid/specs",
                 "regions": ["cn-a"],
                 "zones": ["cn-a-1"],
+                "onDemandPrices": {
+                    "cn-a": {"amount": "0.42", "currency": "cny", "unit": "HOUR"}
+                },
             },
             {
                 "instanceType": "ecs.g8i.large",
@@ -36,6 +40,10 @@ class CommonTests(unittest.TestCase):
                 "sourceUrl": "https://example.invalid/specs",
                 "regions": ["cn-b"],
                 "zones": ["cn-b-1"],
+                "onDemandPrices": {
+                    "cn-b": {"amount": "0.55", "currency": "CNY", "unit": "hour"},
+                    "cn-a": {"amount": "0.40", "currency": "CNY", "unit": "hour"},
+                },
             },
         ]
 
@@ -45,6 +53,28 @@ class CommonTests(unittest.TestCase):
         self.assertEqual(merged[0]["regions"], ["cn-a", "cn-b"])
         self.assertEqual(merged[0]["availableRegionCount"], 2)
         self.assertEqual(merged[0]["availableZoneCount"], 2)
+        self.assertEqual(
+            merged[0]["onDemandPrices"],
+            {
+                "cn-a": {"amount": "0.4", "currency": "CNY", "unit": "hour"},
+                "cn-b": {"amount": "0.55", "currency": "CNY", "unit": "hour"},
+            },
+        )
+
+    def test_normalizes_only_positive_hourly_prices(self) -> None:
+        self.assertEqual(
+            normalize_on_demand_prices(
+                {
+                    "cn-a": {"amount": "1.2300", "currency": "cny", "unit": "HOUR"},
+                    "cn-b": {"amount": 0, "currency": "CNY", "unit": "hour"},
+                    "cn-c": {"amount": "NaN", "currency": "CNY", "unit": "hour"},
+                    "cn-d": {"amount": "1", "currency": "EUR", "unit": "hour"},
+                }
+            ),
+            {
+                "cn-a": {"amount": "1.23", "currency": "CNY", "unit": "hour"}
+            },
+        )
 
     def test_classifies_common_shapes(self) -> None:
         self.assertEqual(

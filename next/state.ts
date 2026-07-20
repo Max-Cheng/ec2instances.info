@@ -69,7 +69,9 @@ export function useSearchTerm(pathname: string) {
 
 export function useSelectedRegion(pathname: string) {
     let defaultRegion = "us-east-1";
-    if (pathname.includes("azure")) {
+    if (/(?:^|\/)(?:alibaba|tencent|volcengine|huawei)(?:\/|$)/.test(pathname)) {
+        defaultRegion = "all";
+    } else if (pathname.includes("azure")) {
         defaultRegion = "us-east";
     } else if (pathname.includes("gcp")) {
         defaultRegion = "us-east4";

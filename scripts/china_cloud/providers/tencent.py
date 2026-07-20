@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import json
 from collections import defaultdict
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from scripts.china_cloud.common import (
@@ -149,6 +150,55 @@ def _is_sellable(item: dict[str, Any]) -> bool:
     return status_category != "withoutstock"
 
 
+def _public_hourly_price(item: dict[str, Any]) -> Decimal | None:
+    price = item.get("Price")
+    if not isinstance(price, dict):
+        return None
+
+    # ItemPrice.UnitPrice is Tencent's original postpaid price. Do not fall
+    # back to UnitPriceDiscount (account discount) or OriginalPrice (prepaid).
+    if str(price.get("ChargeUnit") or "").strip().upper() != "HOUR":
+        return None
+    value = price.get("UnitPrice")
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        amount = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+    if not amount.is_finite() or amount <= 0:
+        return None
+    return amount
+
+
+def _regional_on_demand_prices(
+    quotas: list[dict[str, Any]],
+    region: str,
+) -> dict[str, dict[str, dict[str, str]]]:
+    lowest_by_type: dict[str, Decimal] = {}
+    for quota in quotas:
+        if not _is_sellable(quota):
+            continue
+        instance_type = str(quota.get("InstanceType") or "").strip()
+        amount = _public_hourly_price(quota)
+        if not instance_type or amount is None:
+            continue
+        current = lowest_by_type.get(instance_type)
+        if current is None or amount < current:
+            lowest_by_type[instance_type] = amount
+
+    return {
+        instance_type: {
+            region: {
+                "amount": format(amount.normalize(), "f"),
+                "currency": "CNY",
+                "unit": "hour",
+            }
+        }
+        for instance_type, amount in sorted(lowest_by_type.items())
+    }
+
+
 def _merged_record(
     spec: dict[str, Any],
     quota: dict[str, Any],
@@ -258,6 +308,7 @@ def fetch() -> dict[str, Any]:
         )
         specs = _items(spec_payload, "InstanceTypeConfigSet")
         quotas = _items(quota_payload, "InstanceTypeQuotaSet")
+        regional_prices = _regional_on_demand_prices(quotas, region)
 
         quota_by_key: dict[tuple[str, str], dict[str, Any]] = {}
         quota_by_type: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -280,6 +331,8 @@ def fetch() -> dict[str, Any]:
                 matching = quota_by_type[instance_type][0]
             record = _merged_record(spec, matching or {}, region)
             if record is not None:
+                if price := regional_prices.get(record["instanceType"]):
+                    record["onDemandPrices"] = price
                 records.append(record)
             if matching is not None:
                 emitted_keys.add(
@@ -294,6 +347,8 @@ def fetch() -> dict[str, Any]:
                 continue
             record = _merged_record({}, quota, region)
             if record is not None:
+                if price := regional_prices.get(record["instanceType"]):
+                    record["onDemandPrices"] = price
                 records.append(record)
 
     return provider_result("tencent", records, regions, all_zones)

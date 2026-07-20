@@ -21,6 +21,13 @@ export type RegionalCloudCategory =
 
 export type RegionalCloudArchitecture = "x86_64" | "arm64" | "unknown";
 
+export type RegionalCloudOnDemandPrice = {
+    /** Public Linux pay-as-you-go price for one instance. */
+    amount: string;
+    currency: "CNY" | "USD";
+    unit: "hour";
+};
+
 export type RegionalCloudInstance = {
     instanceType: string;
     family: string;
@@ -33,6 +40,7 @@ export type RegionalCloudInstance = {
     networkPerformance: string;
     localStorage: string;
     sourceUrl: string;
+    onDemandPrices?: Record<string, RegionalCloudOnDemandPrice>;
     regions?: string[];
     zones?: string[];
     availableRegionCount?: number;
@@ -677,6 +685,10 @@ export function resolveRegionalCloudProvider(
         };
     }
 
+    const pricedInstanceCount = generated.instances.filter(
+        (instance) => Object.keys(instance.onDemandPrices ?? {}).length > 0,
+    ).length;
+
     return {
         ...curated,
         dataSource: "api",
@@ -686,6 +698,10 @@ export function resolveRegionalCloudProvider(
         zoneCount: generated.zoneCount,
         skippedRegions: generated.skippedRegions ?? [],
         coverageNote: `Live API snapshot across ${generated.regionCount} regions and ${generated.zoneCount} availability zones.${
+            pricedInstanceCount
+                ? ` ${pricedInstanceCount} instance types include public Linux on-demand pricing.`
+                : ""
+        }${
             generated.skippedRegions?.length
                 ? ` ${generated.skippedRegions.length} account-inaccessible regions were skipped.`
                 : ""

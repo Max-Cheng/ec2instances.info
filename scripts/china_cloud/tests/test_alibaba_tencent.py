@@ -76,8 +76,10 @@ class AlibabaProviderTests(unittest.TestCase):
                                 "MemorySize": 8,
                                 "CpuArchitecture": "X86",
                                 "PhysicalProcessorModel": "Intel Xeon Platinum",
-                                "InstanceBandwidthRx": 3_000_000,
-                                "InstanceBandwidthTx": 2_000_000,
+                                # Alibaba returns marketed Gbps in 1024-based
+                                # kbit/s steps: 3 Gbps is 3,072,000 here.
+                                "InstanceBandwidthRx": 3_072_000,
+                                "InstanceBandwidthTx": 2_048_000,
                                 "InstancePpsRx": 1_000_000,
                                 "LocalStorageAmount": 2,
                                 "LocalStorageCapacity": 100,
@@ -164,6 +166,13 @@ class AlibabaProviderTests(unittest.TestCase):
         self.assertEqual(by_type["ecs.gn7.large"]["regions"], [])
         self.assertEqual(by_type["ecs.gn7.large"]["category"], "Accelerated computing")
         self.assertTrue(REQUIRED_INSTANCE_KEYS <= set(by_type["ecs.g8i.large"]))
+
+        self.assertEqual(
+            alibaba._network_performance(
+                {"InstanceBandwidthRx": 81_920, "InstancePpsRx": 500_000}
+            ),
+            "Up to 80 Mbps; 500 Kpps",
+        )
 
         spec_calls = [entry for entry in calls if entry[1] == "DescribeInstanceTypes"]
         self.assertEqual(len(spec_calls), 2)
@@ -345,7 +354,7 @@ class TencentProviderTests(unittest.TestCase):
         self.assertEqual(standard["architecture"], "x86_64")
         self.assertEqual(standard["processor"], "AMD EPYC @ 2.6 GHz")
         self.assertEqual(
-            standard["networkPerformance"], "Up to 3 Gbps; 30 x 10k PPS"
+            standard["networkPerformance"], "Up to 3 Gbps; 300 Kpps"
         )
         self.assertEqual(by_type["GN7.2XLARGE8"]["regions"], [])
         self.assertEqual(by_type["GN7.2XLARGE8"]["category"], "Accelerated computing")

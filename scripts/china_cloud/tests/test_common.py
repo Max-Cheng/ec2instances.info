@@ -4,12 +4,18 @@ import unittest
 
 from scripts.china_cloud.common import (
     classify_category,
+    format_packet_rate,
     merge_instances,
     normalize_architecture,
 )
 
 
 class CommonTests(unittest.TestCase):
+    def test_formats_packet_rates_with_readable_units(self) -> None:
+        self.assertEqual(format_packet_rate(300_000), "300 Kpps")
+        self.assertEqual(format_packet_rate(1_200_000), "1.2 Mpps")
+        self.assertEqual(format_packet_rate(0), "")
+
     def test_merges_regional_availability_by_instance_type(self) -> None:
         records = [
             {

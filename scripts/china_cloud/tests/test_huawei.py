@@ -226,7 +226,7 @@ class HuaweiProviderTest(unittest.TestCase):
         self.assertEqual(record["gpuCount"], 2)
         self.assertEqual(
             record["networkPerformance"],
-            "10 Gbps max / 2 Gbps assured; 1,200,000 PPS",
+            "10 Gbps max / 2 Gbps assured; 1.2 Mpps",
         )
         self.assertEqual(record["localStorage"], "Local NVMe SSD")
 

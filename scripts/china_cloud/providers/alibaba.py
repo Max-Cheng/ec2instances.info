@@ -5,7 +5,14 @@ import json
 from collections import defaultdict
 from typing import Any
 
-from scripts.china_cloud.common import integer, nonempty, number, provider_result, require_env
+from scripts.china_cloud.common import (
+    format_packet_rate,
+    integer,
+    nonempty,
+    number,
+    provider_result,
+    require_env,
+)
 
 
 SOURCE_URL = (
@@ -83,20 +90,33 @@ def _compact(value: float) -> str:
     return str(int(value)) if value.is_integer() else f"{value:g}"
 
 
+def _bandwidth(value: Any) -> str:
+    # Despite the documented kbit/s unit, Alibaba emits 1024-based steps:
+    # 1,024,000 represents the marketed 1 Gbps rather than 1.024 Gbps.
+    mbps = number(value) / 1024
+    if mbps <= 0:
+        return ""
+    if mbps >= 1000:
+        return f"{_compact(mbps / 1000)} Gbps"
+    return f"{_compact(mbps)} Mbps"
+
+
 def _network_performance(spec: dict[str, Any]) -> str:
-    bandwidth = max(
-        number(spec.get("InstanceBandwidthRx")),
-        number(spec.get("InstanceBandwidthTx")),
+    bandwidth = _bandwidth(
+        max(
+            number(spec.get("InstanceBandwidthRx")),
+            number(spec.get("InstanceBandwidthTx")),
+        )
     )
     packets = max(
         number(spec.get("InstancePpsRx")),
         number(spec.get("InstancePpsTx")),
     )
     details: list[str] = []
-    if bandwidth > 0:
-        details.append(f"Up to {_compact(bandwidth / 1_000_000)} Gbps")
-    if packets > 0:
-        details.append(f"{_compact(packets / 1_000_000)} Mpps")
+    if bandwidth:
+        details.append(f"Up to {bandwidth}")
+    if packet_rate := format_packet_rate(packets):
+        details.append(packet_rate)
     return "; ".join(details) or "Not published"
 
 

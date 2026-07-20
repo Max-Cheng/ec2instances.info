@@ -77,8 +77,11 @@ export default function RegionalCloudIndex({
     }, [initialProvider]);
 
     const instances = useMemo(
-        () => provider.instances.map(adaptRegionalCloudInstance),
-        [provider.instances],
+        () =>
+            provider.instances.map((instance) =>
+                adaptRegionalCloudInstance(instance, provider.pricingUrl),
+            ),
+        [provider.instances, provider.pricingUrl],
     );
     const regions = useMemo(
         () => regionalCloudRegionIds(instances),

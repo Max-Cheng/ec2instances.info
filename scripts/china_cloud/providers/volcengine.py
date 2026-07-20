@@ -6,6 +6,7 @@ from typing import Any
 
 from scripts.china_cloud.common import (
     family_from_instance_type,
+    format_packet_rate,
     integer,
     normalize_architecture,
     number,
@@ -205,9 +206,12 @@ def _bandwidth(value: Any) -> str:
     mbps = number(value)
     if mbps <= 0:
         return ""
-    if mbps >= 1000:
-        return f"{mbps / 1000:g} Gbps"
-    return f"{mbps:g} Mbps"
+    # The ECS API names this field Mbps but emits 1024-based values. For
+    # example, 10240 is the marketed 10 Gbps and 205 is approximately 200 Mbps.
+    gbps = round(mbps / 1024, 1)
+    if gbps >= 1:
+        return f"{gbps:g} Gbps"
+    return f"{gbps * 1000:g} Mbps"
 
 
 def _network_performance(network: Any) -> str:
@@ -226,8 +230,8 @@ def _network_performance(network: Any) -> str:
         parts.append(f"{baseline} baseline / {maximum} maximum")
     elif maximum or baseline:
         parts.append(maximum or baseline)
-    if throughput > 0:
-        parts.append(f"{throughput:g} Kpps")
+    if packet_rate := format_packet_rate(throughput * 1000):
+        parts.append(packet_rate)
     return "; ".join(parts) or "Not published"
 
 

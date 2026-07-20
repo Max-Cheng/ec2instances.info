@@ -49,8 +49,9 @@ class BeijingClient:
                         processor=ns(cpus=2, model="Intel Xeon Ice Lake"),
                         memory=ns(size=8192),
                         network=ns(
-                            baseline_bandwidth_mbps=2000,
-                            maximum_bandwidth_mbps=4000,
+                            # Volcengine's Mbps fields use 1024-based values.
+                            baseline_bandwidth_mbps=2048,
+                            maximum_bandwidth_mbps=4096,
                             maximum_throughput_kpps=500,
                         ),
                         local_volumes=[],
@@ -74,7 +75,7 @@ class BeijingClient:
                     instance_type_family="ecs.gpu3a",
                     processor=ns(cpus=4, model="Ampere Altra Neoverse"),
                     memory=ns(size=16384),
-                    network=ns(maximum_bandwidth_mbps=10000),
+                    network=ns(maximum_bandwidth_mbps=10240),
                     local_volumes=[ns(count=2, size=1900, volume_type="NVMe SSD")],
                     gpu=ns(
                         gpu_devices=[ns(count=2, product_name="NVIDIA A10")]
@@ -228,6 +229,17 @@ class VolcengineProviderTest(unittest.TestCase):
         self.assertEqual(general["availableRegionCount"], 2)
         self.assertEqual(general["availableZoneCount"], 2)
         self.assertIn("2 Gbps baseline / 4 Gbps maximum", general["networkPerformance"])
+
+        self.assertEqual(
+            volcengine._network_performance(
+                ns(
+                    baseline_bandwidth_mbps=205,
+                    maximum_bandwidth_mbps=2048,
+                    maximum_throughput_kpps=1800,
+                )
+            ),
+            "200 Mbps baseline / 2 Gbps maximum; 1.8 Mpps",
+        )
 
         gpu = instances["ecs.gpu3a.xlarge"]
         self.assertEqual(gpu["architecture"], "arm64")

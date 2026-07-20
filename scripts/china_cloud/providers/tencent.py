@@ -5,7 +5,14 @@ import json
 from collections import defaultdict
 from typing import Any
 
-from scripts.china_cloud.common import integer, nonempty, number, provider_result, require_env
+from scripts.china_cloud.common import (
+    format_packet_rate,
+    integer,
+    nonempty,
+    number,
+    provider_result,
+    require_env,
+)
 
 
 SOURCE_URL = "https://cloud.tencent.com/document/product/213/15749"
@@ -97,8 +104,8 @@ def _network_performance(item: dict[str, Any]) -> str:
     details: list[str] = []
     if bandwidth > 0:
         details.append(f"Up to {_compact(bandwidth)} Gbps")
-    if packets > 0:
-        details.append(f"{_compact(packets)} x 10k PPS")
+    if packet_rate := format_packet_rate(packets * 10_000):
+        details.append(packet_rate)
     return "; ".join(details) or "Not published"
 
 

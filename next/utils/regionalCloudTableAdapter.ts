@@ -3,6 +3,7 @@ import type { RegionalCloudInstance } from "@/data/regionalClouds";
 export type RegionalCloudTableInstance = RegionalCloudInstance & {
     instance_type: string;
     memoryPerVcpu: number;
+    pricingUrl: string;
     regions: string[];
     zones: string[];
     availableRegionCount: number;
@@ -11,6 +12,7 @@ export type RegionalCloudTableInstance = RegionalCloudInstance & {
 
 export function adaptRegionalCloudInstance(
     instance: RegionalCloudInstance,
+    pricingUrl: string,
 ): RegionalCloudTableInstance {
     const regions = instance.regions ?? [];
     const zones = instance.zones ?? [];
@@ -20,6 +22,7 @@ export function adaptRegionalCloudInstance(
         instance_type: instance.instanceType,
         memoryPerVcpu:
             Math.round((instance.memoryGiB / instance.vCPU) * 100) / 100,
+        pricingUrl,
         regions,
         zones,
         availableRegionCount: instance.availableRegionCount ?? regions.length,

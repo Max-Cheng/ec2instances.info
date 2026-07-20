@@ -43,6 +43,19 @@ def integer(value: Any, default: int = 0) -> int:
     return int(number(value, default))
 
 
+def format_packet_rate(pps: Any) -> str:
+    """Format a packet rate supplied as packets per second."""
+
+    rate = number(pps)
+    if rate <= 0:
+        return ""
+    if rate >= 1_000_000:
+        return f"{rate / 1_000_000:g} Mpps"
+    if rate >= 1_000:
+        return f"{rate / 1_000:g} Kpps"
+    return f"{rate:g} pps"
+
+
 def nonempty(value: Any, fallback: str) -> str:
     text = str(value or "").strip()
     return text if text else fallback

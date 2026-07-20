@@ -8,6 +8,7 @@ from typing import Any
 
 from scripts.china_cloud.common import (
     family_from_instance_type,
+    format_packet_rate,
     number,
     provider_result,
     require_env,
@@ -357,8 +358,8 @@ def _network_performance(extra_specs: Any) -> str:
         text = f"Up to {maximum}"
     else:
         text = "Not published"
-    if pps > 0:
-        text += f"; {int(pps):,} PPS"
+    if packet_rate := format_packet_rate(pps):
+        text += f"; {packet_rate}"
     return text
 
 

@@ -20,11 +20,10 @@ const initialColumnsArr = [
     ["processor", true],
     ["networkPerformance", true],
     ["localStorage", true],
-    ["availableRegionCount", true],
+    ["pricingUrl", true],
     ["availableZoneCount", false],
     ["regions", false],
     ["zones", false],
-    ["sourceUrl", true],
 ] as const;
 
 export const initialColumnsValue: {
@@ -56,11 +55,10 @@ export function makePrettyNames<V>(
         makeColumnOption("processor", "Physical Processor"),
         makeColumnOption("networkPerformance", "Network Performance"),
         makeColumnOption("localStorage", "Instance Storage"),
-        makeColumnOption("availableRegionCount", "Available Regions"),
+        makeColumnOption("pricingUrl", "Pricing"),
         makeColumnOption("availableZoneCount", "Available Zones"),
         makeColumnOption("regions", "Region IDs"),
         makeColumnOption("zones", "Availability Zone IDs"),
-        makeColumnOption("sourceUrl", "Official Source"),
     ];
 }
 
@@ -169,12 +167,23 @@ export const columnsGen = (
         filterFn: regex({ accessorKey: "localStorage" }),
     },
     {
-        accessorKey: "availableRegionCount",
-        header: "Available Regions",
-        id: "availableRegionCount",
-        size: 160,
-        sortingFn: "alphanumeric",
-        filterFn: expr,
+        accessorKey: "pricingUrl",
+        header: "Pricing",
+        id: "pricingUrl",
+        size: 140,
+        enableColumnFilter: false,
+        enableSorting: false,
+        cell: (info) => (
+            <a
+                href={info.getValue() as string}
+                target="_blank"
+                rel="noreferrer"
+                aria-label={`View ${info.row.original.instance_type} pricing`}
+                onClick={(event) => event.stopPropagation()}
+            >
+                View pricing
+            </a>
+        ),
     },
     {
         accessorKey: "availableZoneCount",
@@ -202,24 +211,6 @@ export const columnsGen = (
         sortingFn: "alphanumeric",
         ...makeCellWithRegexSorter("zones", (info) =>
             info.row.original.zones.join(", "),
-        ),
-    },
-    {
-        accessorKey: "sourceUrl",
-        header: "Official Source",
-        id: "sourceUrl",
-        size: 145,
-        enableColumnFilter: false,
-        enableSorting: false,
-        cell: (info) => (
-            <a
-                href={info.getValue() as string}
-                target="_blank"
-                rel="noreferrer"
-                onClick={(event) => event.stopPropagation()}
-            >
-                Official
-            </a>
         ),
     },
 ];

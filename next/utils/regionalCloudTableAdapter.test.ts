@@ -40,11 +40,17 @@ describe("regional cloud table adapter", () => {
             availableZoneCount: 9,
         };
 
-        expect(adaptRegionalCloudInstance(source)).toEqual(
+        expect(
+            adaptRegionalCloudInstance(
+                source,
+                "https://www.alibabacloud.com/pricing/calculator",
+            ),
+        ).toEqual(
             expect.objectContaining({
                 instanceType: "ecs.g8i.large",
                 instance_type: "ecs.g8i.large",
                 memoryPerVcpu: 3.33,
+                pricingUrl: "https://www.alibabacloud.com/pricing/calculator",
                 regions: ["cn-beijing", "cn-shanghai"],
                 zones: ["cn-beijing-a", "cn-shanghai-b"],
                 availableRegionCount: 7,
@@ -55,7 +61,12 @@ describe("regional cloud table adapter", () => {
     });
 
     test("defaults availability arrays and counts when the API omits them", () => {
-        expect(adaptRegionalCloudInstance(instance("ecs.g8i.xlarge"))).toEqual(
+        expect(
+            adaptRegionalCloudInstance(
+                instance("ecs.g8i.xlarge"),
+                "https://www.alibabacloud.com/pricing/calculator",
+            ),
+        ).toEqual(
             expect.objectContaining({
                 regions: [],
                 zones: [],
@@ -69,9 +80,11 @@ describe("regional cloud table adapter", () => {
         const instances = [
             adaptRegionalCloudInstance(
                 instance("ecs.g8i.large", ["cn-test-10", "cn-test-2"]),
+                "https://www.alibabacloud.com/pricing/calculator",
             ),
             adaptRegionalCloudInstance(
                 instance("ecs.g8i.xlarge", ["cn-test-1", "cn-test-2"]),
+                "https://www.alibabacloud.com/pricing/calculator",
             ),
         ];
 

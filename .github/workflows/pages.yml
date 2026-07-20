@@ -201,6 +201,20 @@ jobs:
                     .venv-china-clouds/bin/python -m scripts.update_china_clouds \
                     "${collector_args[@]}" \
                     || status=$?
+
+                  if [ "$status" -eq 124 ] && \
+                     [ "${{ steps.previous_china_cloud_catalog.outputs.available }}" = "true" ] && \
+                     [ ! -e "$failure_marker" ] && \
+                     [ -s "$checkpoint" ] && \
+                     cmp -s /tmp/china-clouds-previous.json "$checkpoint"; then
+                    echo "::warning title=China cloud refresh made no progress::Retrying all providers once with a 120-second budget."
+                    status=0
+                    timeout --signal=TERM --kill-after=15s 120s \
+                      .venv-china-clouds/bin/python -m scripts.update_china_clouds \
+                      "${collector_args[@]}" \
+                      || status=$?
+                  fi
+
                   if [ "$status" -eq 124 ]; then
                     if [ -e "$failure_marker" ]; then
                       echo "::error title=China cloud provider failed::At least one provider raised an explicit error before the overall timeout."

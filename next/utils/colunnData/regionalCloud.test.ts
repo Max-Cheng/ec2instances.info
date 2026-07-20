@@ -28,8 +28,16 @@ const tableInstance = {
     availableRegionCount: 2,
     availableZoneCount: 2,
     onDemandPrices: {
-        "cn-beijing": { amount: "0.5", currency: "CNY" as const, unit: "hour" as const },
-        "cn-shanghai": { amount: "0.8", currency: "CNY" as const, unit: "hour" as const },
+        "cn-beijing": {
+            amount: "0.5",
+            currency: "CNY" as const,
+            unit: "hour" as const,
+        },
+        "cn-shanghai": {
+            amount: "0.8",
+            currency: "CNY" as const,
+            unit: "hour" as const,
+        },
     },
 };
 
@@ -76,9 +84,7 @@ describe("regional cloud columns", () => {
         expect(markup).toContain(
             'href="https://www.alibabacloud.com/pricing/calculator"',
         );
-        expect(markup).toContain(
-            'aria-label="View pricing for ecs.g8i.large"',
-        );
+        expect(markup).toContain('aria-label="View pricing for ecs.g8i.large"');
         expect(markup).toContain("View pricing");
     });
 

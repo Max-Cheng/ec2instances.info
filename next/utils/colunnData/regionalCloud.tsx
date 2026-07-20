@@ -65,8 +65,7 @@ export function resolveRegionalCloudPrice(
     let result: ResolvedRegionalCloudPrice | undefined;
     for (const [region, source] of candidates) {
         const amount = Number(source.amount);
-        const value =
-            (amount * HOUR_MULTIPLIERS[costDuration]) / divisor;
+        const value = (amount * HOUR_MULTIPLIERS[costDuration]) / divisor;
         if (!Number.isFinite(value) || value <= 0) continue;
         if (!result || value < result.value) {
             result = {
@@ -290,11 +289,7 @@ export const columnsGen = (
                 costDuration,
             );
             const label = price
-                ? formatRegionalCloudPrice(
-                      price,
-                      pricingUnit,
-                      costDuration,
-                  )
+                ? formatRegionalCloudPrice(price, pricingUnit, costDuration)
                 : "View pricing";
             const title = price
                 ? `Public Linux pay-as-you-go price for ${price.region}; excludes account discounts`

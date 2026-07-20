@@ -328,6 +328,65 @@ def _public_price_amount(value: Any) -> str | None:
     return format(amount.normalize(), "f")
 
 
+def _price_error_texts(error: Exception) -> list[str]:
+    texts: list[str] = []
+    for value in (_value(error, "error_msg"), str(error)):
+        text = str(value or "").replace(r'\"', '"').replace(r"\'", "'")
+        if text and text not in texts:
+            texts.append(text)
+    return texts
+
+
+def _is_price_product_not_found(error: Exception) -> bool:
+    """Return whether BSS rejected an unknown product specification."""
+
+    error_code = str(_value(error, "error_code", "") or "").strip()
+    if error_code == "CBC.6006":
+        return True
+    if error_code != "CBC.99006006":
+        return False
+
+    # The Huawei SDK wraps BSS's real CBC.6006 response in CBC.99006006.
+    # Require the nested error-code field as well: CBC.99006006 is a generic
+    # wrapper and must not make unrelated billing failures look skippable.
+    nested_code = re.compile(
+        r"(?:\[error_code\]|[\"']error_code[\"'])\s*:\s*"
+        r"[\"']?CBC\.6006\b",
+        re.IGNORECASE,
+    )
+    return any(nested_code.search(text) for text in _price_error_texts(error))
+
+
+def _missing_price_instance_type(
+    error: Exception,
+    batch: Iterable[str],
+) -> str | None:
+    """Extract the exact missing flavor named by a CBC.6006 response."""
+
+    instance_type_by_spec = {
+        f"{instance_type}.linux": instance_type for instance_type in batch
+    }
+    missing_product = re.compile(
+        r"\bcan(?:\s+not|not)\s+find\s+product\s*[:=]?\s*"
+        r"[\"']?([a-z0-9][a-z0-9._-]*\.linux)\b",
+        re.IGNORECASE,
+    )
+    for text in _price_error_texts(error):
+        match = missing_product.search(text)
+        if match:
+            instance_type = instance_type_by_spec.get(match.group(1))
+            if instance_type is not None:
+                return instance_type
+    return None
+
+
+def _warn_price_product_skipped(region_id: str, instance_type: str) -> None:
+    print(
+        "::warning title=Huawei price skipped::"
+        f"{region_id}/{instance_type}: BSS product not found (CBC.6006)"
+    )
+
+
 def _regional_on_demand_prices(
     client: Any,
     sdk: _HuaweiSdk,
@@ -347,8 +406,7 @@ def _regional_on_demand_prices(
     )
     prices: dict[str, dict[str, dict[str, str]]] = {}
 
-    for offset in range(0, len(instance_types), PRICE_BATCH_SIZE):
-        batch = instance_types[offset : offset + PRICE_BATCH_SIZE]
+    def query_batch(batch: list[str]) -> None:
         instance_type_by_id = {
             str(index): instance_type
             for index, instance_type in enumerate(batch, start=1)
@@ -372,9 +430,36 @@ def _regional_on_demand_prices(
             inquiry_precision=1,
             product_infos=product_infos,
         )
-        response = client.list_on_demand_resource_ratings(
-            sdk.ListOnDemandResourceRatingsRequest(body=body)
-        )
+        try:
+            response = client.list_on_demand_resource_ratings(
+                sdk.ListOnDemandResourceRatingsRequest(body=body)
+            )
+        except Exception as error:
+            # One retired or otherwise unknown flavor makes BSS reject the
+            # entire request. Remove the named product when possible; otherwise
+            # bisect this documented product-not-found failure. Permissions,
+            # transport failures, throttling, and every other BSS error remain
+            # fatal and propagate unchanged.
+            if not _is_price_product_not_found(error):
+                raise
+            missing_instance_type = _missing_price_instance_type(error, batch)
+            if missing_instance_type is not None:
+                _warn_price_product_skipped(region_id, missing_instance_type)
+                remaining = [
+                    instance_type
+                    for instance_type in batch
+                    if instance_type != missing_instance_type
+                ]
+                if remaining:
+                    query_batch(remaining)
+                return
+            if len(batch) == 1:
+                _warn_price_product_skipped(region_id, batch[0])
+                return
+            midpoint = len(batch) // 2
+            query_batch(batch[:midpoint])
+            query_batch(batch[midpoint:])
+            return
 
         currency = str(_value(response, "currency", "") or "CNY").upper()
         if currency != "CNY":
@@ -399,6 +484,9 @@ def _regional_on_demand_prices(
                         "unit": "hour",
                     }
                 }
+
+    for offset in range(0, len(instance_types), PRICE_BATCH_SIZE):
+        query_batch(instance_types[offset : offset + PRICE_BATCH_SIZE])
 
     return prices
 

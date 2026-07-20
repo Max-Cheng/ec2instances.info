@@ -85,13 +85,43 @@ class FakeEcsClient:
 
 
 class FakeBssClient:
-    def __init__(self, prices=None, *, currency="CNY"):
+    def __init__(
+        self,
+        prices=None,
+        *,
+        currency="CNY",
+        missing_products=None,
+        wrap_missing_errors=True,
+        error=None,
+    ):
         self.prices = prices or {}
         self.currency = currency
+        self.missing_products = set(missing_products or [])
+        self.wrap_missing_errors = wrap_missing_errors
+        self.error = error
         self.requests = []
 
     def list_on_demand_resource_ratings(self, request):
         self.requests.append(request)
+        if self.error is not None:
+            raise self.error
+        requested_products = {
+            (product.region, product.resource_spec.removesuffix(".linux"))
+            for product in request.body.product_infos
+        }
+        missing_products = requested_products & self.missing_products
+        if missing_products:
+            _region, instance_type = sorted(missing_products)[0]
+            if not self.wrap_missing_errors:
+                raise FakeClientRequestException("CBC.6006")
+            raise FakeClientRequestException(
+                "CBC.99006006",
+                error_msg=(
+                    "[error_code]:CBC.6006; "
+                    '{"error_code":"CBC.6006","error_msg":'
+                    f'"Can not find product {instance_type}.linux"}}'
+                ),
+            )
         results = []
         for product in reversed(request.body.product_infos):
             instance_type = product.resource_spec.removesuffix(".linux")
@@ -118,10 +148,11 @@ class FakeBssClient:
 
 
 class FakeClientRequestException(Exception):
-    def __init__(self, error_code: str):
-        super().__init__(error_code)
+    def __init__(self, error_code: str, *, error_msg: str | None = None):
+        super().__init__(error_msg or error_code)
         self.status_code = 403
         self.error_code = error_code
+        self.error_msg = error_msg
 
 
 class HuaweiProviderTest(unittest.TestCase):
@@ -289,6 +320,111 @@ class HuaweiProviderTest(unittest.TestCase):
                     }
                 ],
             )
+
+    def test_prices_remove_named_missing_product_and_retry_batch(self):
+        records = [
+            {"instanceType": instance_type, "regions": ["cn-north-4"]}
+            for instance_type in ["a.valid", "b.missing", "c.valid"]
+        ]
+        client = FakeBssClient(
+            {
+                ("cn-north-4", "a.valid"): "0.10",
+                ("cn-north-4", "c.valid"): "0.30",
+            },
+            missing_products={("cn-north-4", "b.missing")},
+        )
+
+        output = io.StringIO()
+        with redirect_stdout(output):
+            result = huawei._regional_on_demand_prices(
+                client,
+                FAKE_SDK,
+                "project-north",
+                "cn-north-4",
+                records,
+            )
+
+        self.assertEqual(
+            [len(request.body.product_infos) for request in client.requests],
+            [3, 2],
+        )
+        self.assertEqual(set(result), {"a.valid", "c.valid"})
+        self.assertEqual(
+            result["a.valid"]["cn-north-4"]["amount"],
+            "0.1",
+        )
+        self.assertEqual(
+            result["c.valid"]["cn-north-4"]["amount"],
+            "0.3",
+        )
+        self.assertIn("Huawei price skipped", output.getvalue())
+        self.assertIn("cn-north-4/b.missing", output.getvalue())
+        self.assertIn("CBC.6006", output.getvalue())
+
+    def test_prices_support_direct_product_not_found_code_with_bisection(self):
+        client = FakeBssClient(
+            {
+                ("cn-north-4", "a.valid"): "0.10",
+                ("cn-north-4", "c.valid"): "0.30",
+            },
+            missing_products={("cn-north-4", "b.missing")},
+            wrap_missing_errors=False,
+        )
+        records = [
+            {"instanceType": instance_type, "regions": ["cn-north-4"]}
+            for instance_type in ["a.valid", "b.missing", "c.valid"]
+        ]
+
+        with redirect_stdout(io.StringIO()):
+            result = huawei._regional_on_demand_prices(
+                client,
+                FAKE_SDK,
+                "project-north",
+                "cn-north-4",
+                records,
+            )
+
+        self.assertEqual(set(result), {"a.valid", "c.valid"})
+        self.assertEqual(
+            [len(request.body.product_infos) for request in client.requests],
+            [3, 1, 2, 1, 1],
+        )
+
+    def test_prices_propagate_non_product_not_found_errors_without_split(self):
+        errors = [
+            FakeClientRequestException("CBC.9999"),
+            FakeClientRequestException(
+                "CBC.99006006",
+                error_msg=(
+                    "[error_code]:CBC.7007; "
+                    '{"error_code":"CBC.7007","error_msg":"No permission"}'
+                ),
+            ),
+        ]
+        for error in errors:
+            with self.subTest(error_code=error.error_code, message=str(error)):
+                client = FakeBssClient(error=error)
+
+                with self.assertRaises(FakeClientRequestException) as raised:
+                    huawei._regional_on_demand_prices(
+                        client,
+                        FAKE_SDK,
+                        "project-north",
+                        "cn-north-4",
+                        [
+                            {
+                                "instanceType": "c7.large.2",
+                                "regions": ["cn-north-4"],
+                            },
+                            {
+                                "instanceType": "m7.large.8",
+                                "regions": ["cn-north-4"],
+                            },
+                        ],
+                    )
+
+                self.assertIs(raised.exception, error)
+                self.assertEqual(len(client.requests), 1)
 
     def test_availability_uses_region_default_and_az_overrides(self):
         extra = {

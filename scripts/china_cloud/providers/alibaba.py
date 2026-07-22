@@ -39,6 +39,24 @@ AVAILABILITY_WORKERS = 8
 PRICE_QUERIES_PER_SECOND = 18
 PREVIOUS_CATALOG_ENV = "CHINA_CLOUD_PREVIOUS_CATALOG"
 DEFAULT_PREVIOUS_CATALOG = Path("/tmp/china-clouds-previous.json")
+SDK_ACTIONS = (
+    "DescribeAvailableResource",
+    "DescribeInstanceTypes",
+    "DescribePrice",
+    "DescribeRegions",
+    "DescribeZones",
+)
+
+
+def prepare() -> None:
+    """Load the SDK serially before provider network work becomes concurrent."""
+
+    import aliyunsdkcore.client  # noqa: F401
+
+    for action in SDK_ACTIONS:
+        importlib.import_module(
+            f"aliyunsdkecs.request.v20140526.{action}Request"
+        )
 
 
 def _make_client(access_key_id: str, access_key_secret: str, region_id: str) -> Any:

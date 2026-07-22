@@ -64,8 +64,13 @@ class UpdateChinaCloudsTests(unittest.TestCase):
             {slug: 1 for slug in update_china_clouds.PROVIDER_SLUGS},
         )
         self.minimum_counts.start()
+        self.prepare_provider = mock.patch.object(
+            update_china_clouds, "prepare_provider"
+        )
+        self.prepare_provider_mock = self.prepare_provider.start()
 
     def tearDown(self) -> None:
+        self.prepare_provider.stop()
         self.minimum_counts.stop()
 
     def args(self, root: Path, previous: Path | None) -> argparse.Namespace:
@@ -164,6 +169,30 @@ class UpdateChinaCloudsTests(unittest.TestCase):
                 set(args.completion_marker.read_text(encoding="utf-8").splitlines()),
                 set(update_china_clouds.PROVIDER_SLUGS),
             )
+
+    def test_prepares_every_sdk_before_starting_provider_workers(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            previous_path = root / "previous.json"
+            self.write_catalog(previous_path, catalog())
+            args = self.args(root, previous_path)
+            args.providers = ["alibaba", "tencent"]
+            prepared: list[str] = []
+
+            self.prepare_provider_mock.side_effect = prepared.append
+
+            def fetch(slug: str) -> dict[str, object]:
+                self.assertEqual(prepared, args.providers)
+                return provider(slug, "new")
+
+            with mock.patch.object(
+                update_china_clouds, "parse_args", return_value=args
+            ), mock.patch.object(
+                update_china_clouds, "fetch_provider", side_effect=fetch
+            ):
+                self.assertEqual(update_china_clouds.main(), 0)
+
+            self.assertEqual(prepared, args.providers)
 
     def test_explicit_provider_failure_marks_error_but_keeps_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

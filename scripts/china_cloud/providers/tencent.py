@@ -21,6 +21,18 @@ SOURCE_URL = "https://cloud.tencent.com/document/product/213/15749"
 REQUEST_TIMEOUT_SECONDS = 20
 
 
+def prepare() -> None:
+    """Load the SDK serially before provider network work becomes concurrent."""
+
+    from tencentcloud.common import credential  # noqa: F401
+    from tencentcloud.common.profile import client_profile  # noqa: F401
+    from tencentcloud.common.profile import http_profile  # noqa: F401
+    from tencentcloud.cvm.v20170312 import cvm_client  # noqa: F401
+    from tencentcloud.cvm.v20170312 import models as cvm_models  # noqa: F401
+    from tencentcloud.region.v20220627 import models as region_models  # noqa: F401
+    from tencentcloud.region.v20220627 import region_client  # noqa: F401
+
+
 def _client_profile(endpoint: str) -> Any:
     from tencentcloud.common.profile.client_profile import ClientProfile
     from tencentcloud.common.profile.http_profile import HttpProfile

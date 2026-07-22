@@ -145,6 +145,13 @@ def _load_sdk() -> _HuaweiSdk:
     )
 
 
+def prepare() -> None:
+    """Load the SDK serially before provider network work becomes concurrent."""
+
+    _load_sdk()
+    from huaweicloudsdkcore.http import http_config  # noqa: F401
+
+
 def _build_iam_client(access_key: str, secret_key: str, sdk: _HuaweiSdk) -> Any:
     from huaweicloudsdkcore.http.http_config import HttpConfig
 

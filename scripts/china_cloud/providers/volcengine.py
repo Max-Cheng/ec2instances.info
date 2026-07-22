@@ -36,6 +36,12 @@ def _sdk() -> tuple[Any, Any]:
     return volcenginesdkcore, volcenginesdkecs
 
 
+def prepare() -> None:
+    """Load the SDK serially before provider network work becomes concurrent."""
+
+    _sdk()
+
+
 def _client(
     core: Any,
     ecs: Any,

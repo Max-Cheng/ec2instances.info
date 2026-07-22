@@ -208,7 +208,10 @@ jobs:
               id: china_cloud_refresh
               env:
                   PYTHONUNBUFFERED: "1"
-                  CHINA_CLOUD_STACK_DUMP_SECONDS: "30"
+                  # A healthy refresh finishes in roughly 80 seconds. Dump once
+                  # shortly before the 120-second no-progress guard instead of
+                  # flooding successful run logs every 30 seconds.
+                  CHINA_CLOUD_STACK_DUMP_SECONDS: "100"
                   # Bound glibc DNS retries as well as the SDK socket timeouts.
                   RES_OPTIONS: "timeout:2 attempts:2"
                   ALIBABA_CLOUD_ACCESS_KEY_ID: ${{ secrets.ALIBABA_CLOUD_ACCESS_KEY_ID }}

@@ -324,6 +324,17 @@ def fetch_provider(slug: str) -> dict[str, Any]:
     return provider
 
 
+def prepare_provider(slug: str) -> None:
+    """Import one provider and its SDKs on the coordinator thread."""
+
+    print(f"{slug}: stage=sdk_imports status=started", flush=True)
+    module = importlib.import_module(f"scripts.china_cloud.providers.{slug}")
+    prepare = getattr(module, "prepare", None)
+    if prepare is not None:
+        prepare()
+    print(f"{slug}: stage=sdk_imports status=completed", flush=True)
+
+
 def fetch_provider_guarded(
     slug: str,
     failure_marker: Path | None,
@@ -388,6 +399,12 @@ def main() -> int:
 
     failed = False
     try:
+        # Several vendor SDKs lazily import conflicting requests/urllib3 trees.
+        # Import them one at a time on the coordinator thread before any worker
+        # starts, avoiding cross-thread module-lock deadlocks.
+        for slug in selected:
+            prepare_provider(slug)
+
         # Each provider has independent credentials, endpoints, and rate limits.
         # Fetch them concurrently so the daily job takes roughly as long as the
         # slowest cloud instead of the sum of all four clouds.

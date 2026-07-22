@@ -855,14 +855,14 @@ def _fetch_extended_prices(
         )
         if missing_regions:
             target = missing_regions[day_ordinal % len(missing_regions)]
-            missing.append(
-                (instance_type, target, target not in retained_subscription)
-            )
+            # Refresh the stable subscription quote alongside the sampled spot
+            # quote. Cached totals are retained as fallback, but never forever.
+            missing.append((instance_type, target, True))
         else:
             # Subscription totals are stable enough to keep, but spot quotes are
             # refreshed continuously. Rotate the refreshed region each day.
             target = regions[day_ordinal % len(regions)]
-            refresh.append((instance_type, target, False))
+            refresh.append((instance_type, target, True))
 
     queue = _rotate_daily(missing, day_ordinal=day_ordinal)
     queue.extend(_rotate_daily(refresh, day_ordinal=day_ordinal))

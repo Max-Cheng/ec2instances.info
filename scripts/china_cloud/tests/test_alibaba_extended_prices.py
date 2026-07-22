@@ -126,6 +126,18 @@ class AlibabaExtendedPriceTests(unittest.TestCase):
                         "zones": {"cn-a-a", "cn-a-b"},
                     }
                 },
+                cached_subscription_prices={
+                    "ecs.g8i.large": {
+                        "cn-a": {
+                            "amount": "0.5",
+                            "totalAmount": "4380",
+                            "currency": "CNY",
+                            "unit": "hour",
+                            "term": "1-year",
+                            "payment": "all-upfront",
+                        }
+                    }
+                },
                 time_budget_seconds=2,
                 queries_per_second=10_000,
                 workers=1,

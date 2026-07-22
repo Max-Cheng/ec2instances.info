@@ -1,5 +1,9 @@
 import type { CostDuration, PricingUnit } from "@/types";
-import type { RegionalCloudOnDemandPrice } from "@/data/regionalClouds";
+import type {
+    RegionalCloudHourlyPrice,
+    RegionalCloudSpotPrice,
+    RegionalCloudSubscriptionPrice,
+} from "@/data/regionalClouds";
 import type { RegionalCloudTableInstance } from "@/utils/regionalCloudTableAdapter";
 import type { ColumnDef } from "@tanstack/react-table";
 import {
@@ -32,7 +36,7 @@ const DURATION_LABELS: Record<CostDuration, string> = {
 export type ResolvedRegionalCloudPrice = {
     value: number;
     region: string;
-    source: RegionalCloudOnDemandPrice;
+    source: RegionalCloudHourlyPrice;
     fromMultipleRegions: boolean;
 };
 
@@ -46,18 +50,19 @@ function pricingUnitDivisor(
     return undefined;
 }
 
-export function resolveRegionalCloudPrice(
+function resolveRegionalCloudPriceMap<T extends RegionalCloudHourlyPrice>(
     instance: RegionalCloudTableInstance,
+    prices: Record<string, T> | undefined,
     selectedRegion: string,
     pricingUnit: PricingUnit,
     costDuration: CostDuration,
 ): ResolvedRegionalCloudPrice | undefined {
-    const prices = instance.onDemandPrices ?? {};
+    const regionalPrices = prices ?? {};
     const candidates =
         selectedRegion === "all"
-            ? Object.entries(prices)
-            : prices[selectedRegion]
-              ? ([[selectedRegion, prices[selectedRegion]]] as const)
+            ? Object.entries(regionalPrices)
+            : regionalPrices[selectedRegion]
+              ? ([[selectedRegion, regionalPrices[selectedRegion]]] as const)
               : [];
     const divisor = pricingUnitDivisor(instance, pricingUnit);
     if (!divisor || divisor <= 0) return undefined;
@@ -77,6 +82,51 @@ export function resolveRegionalCloudPrice(
         }
     }
     return result;
+}
+
+export function resolveRegionalCloudPrice(
+    instance: RegionalCloudTableInstance,
+    selectedRegion: string,
+    pricingUnit: PricingUnit,
+    costDuration: CostDuration,
+): ResolvedRegionalCloudPrice | undefined {
+    return resolveRegionalCloudPriceMap(
+        instance,
+        instance.onDemandPrices,
+        selectedRegion,
+        pricingUnit,
+        costDuration,
+    );
+}
+
+export function resolveRegionalCloudSubscriptionPrice(
+    instance: RegionalCloudTableInstance,
+    selectedRegion: string,
+    pricingUnit: PricingUnit,
+    costDuration: CostDuration,
+): ResolvedRegionalCloudPrice | undefined {
+    return resolveRegionalCloudPriceMap(
+        instance,
+        instance.subscriptionPrices,
+        selectedRegion,
+        pricingUnit,
+        costDuration,
+    );
+}
+
+export function resolveRegionalCloudSpotPrice(
+    instance: RegionalCloudTableInstance,
+    selectedRegion: string,
+    pricingUnit: PricingUnit,
+    costDuration: CostDuration,
+): ResolvedRegionalCloudPrice | undefined {
+    return resolveRegionalCloudPriceMap(
+        instance,
+        instance.spotPrices,
+        selectedRegion,
+        pricingUnit,
+        costDuration,
+    );
 }
 
 function formatRegionalCloudPrice(
@@ -103,6 +153,96 @@ function formatRegionalCloudPrice(
     }${unit}`;
 }
 
+type RegionalCloudPriceResolver = (
+    instance: RegionalCloudTableInstance,
+    selectedRegion: string,
+    pricingUnit: PricingUnit,
+    costDuration: CostDuration,
+) => ResolvedRegionalCloudPrice | undefined;
+
+function formatSourceAmount(amount: string, currency: "CNY" | "USD"): string {
+    return Intl.NumberFormat("en-US", {
+        style: "currency",
+        currency,
+        currencyDisplay: "narrowSymbol",
+        maximumFractionDigits: 4,
+    }).format(Number(amount));
+}
+
+function regionalCloudPriceTitle(
+    kind: "on-demand" | "subscription" | "spot",
+    price: ResolvedRegionalCloudPrice | undefined,
+): string {
+    if (!price) {
+        return `No numeric public ${kind} price was collected for this region`;
+    }
+    if (kind === "subscription") {
+        const source = price.source as RegionalCloudSubscriptionPrice;
+        return `Public one-year all-upfront subscription price for ${price.region}; ${formatSourceAmount(source.totalAmount, source.currency)} total, shown as effective hourly cost; excludes account discounts`;
+    }
+    if (kind === "spot") {
+        const source = price.source as RegionalCloudSpotPrice;
+        const zone = source.zone ? ` in ${source.zone}` : "";
+        const observedAt = source.observedAt
+            ? `; observed ${source.observedAt}`
+            : "";
+        return `Collected public spot price for ${price.region}${zone}${observedAt}; spot prices can change at any time`;
+    }
+    return `Public Linux pay-as-you-go price for ${price.region}; excludes account discounts`;
+}
+
+function regionalCloudPriceColumn(
+    id: "pricingUrl" | "subscriptionPricingUrl" | "spotPricingUrl",
+    header: string,
+    kind: "on-demand" | "subscription" | "spot",
+    fallbackLabel: string,
+    resolver: RegionalCloudPriceResolver,
+    selectedRegion: string,
+    pricingUnit: PricingUnit,
+    costDuration: CostDuration,
+): ColumnDef<RegionalCloudTableInstance> {
+    return {
+        accessorFn: (instance) =>
+            resolver(instance, selectedRegion, pricingUnit, costDuration)
+                ?.value,
+        header,
+        id,
+        size: 210,
+        enableColumnFilter: false,
+        sortingFn: (rowA, rowB, columnId) => {
+            const left = rowA.getValue<number | undefined>(columnId);
+            const right = rowB.getValue<number | undefined>(columnId);
+            if (left === undefined) return right === undefined ? 0 : 1;
+            if (right === undefined) return -1;
+            return left - right;
+        },
+        cell: (info) => {
+            const instance = info.row.original;
+            const price = resolver(
+                instance,
+                selectedRegion,
+                pricingUnit,
+                costDuration,
+            );
+            const label = price
+                ? formatRegionalCloudPrice(price, pricingUnit, costDuration)
+                : fallbackLabel;
+            return (
+                <a
+                    href={instance.pricingUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    title={regionalCloudPriceTitle(kind, price)}
+                    aria-label={`${label} for ${instance.instance_type}`}
+                    onClick={(event) => event.stopPropagation()}
+                >
+                    {label}
+                </a>
+            );
+        },
+    };
+}
+
 const initialColumnsArr = [
     ["familyName", true],
     ["instance_type", true],
@@ -116,6 +256,8 @@ const initialColumnsArr = [
     ["networkPerformance", true],
     ["localStorage", true],
     ["pricingUrl", true],
+    ["subscriptionPricingUrl", true],
+    ["spotPricingUrl", true],
     ["availableZoneCount", false],
     ["regions", false],
     ["zones", false],
@@ -150,7 +292,12 @@ export function makePrettyNames<V>(
         makeColumnOption("processor", "Physical Processor"),
         makeColumnOption("networkPerformance", "Network Performance"),
         makeColumnOption("localStorage", "Instance Storage"),
-        makeColumnOption("pricingUrl", "Linux On Demand"),
+        makeColumnOption("pricingUrl", "Linux On Demand cost"),
+        makeColumnOption(
+            "subscriptionPricingUrl",
+            "Linux 1-Year Subscription cost",
+        ),
+        makeColumnOption("spotPricingUrl", "Linux Spot cost"),
         makeColumnOption("availableZoneCount", "Available Zones"),
         makeColumnOption("regions", "Region IDs"),
         makeColumnOption("zones", "Availability Zone IDs"),
@@ -261,53 +408,36 @@ export const columnsGen = (
         sortingFn: "alphanumeric",
         filterFn: regex({ accessorKey: "localStorage" }),
     },
-    {
-        accessorFn: (instance) =>
-            resolveRegionalCloudPrice(
-                instance,
-                selectedRegion,
-                pricingUnit,
-                costDuration,
-            )?.value,
-        header: "Linux On Demand",
-        id: "pricingUrl",
-        size: 190,
-        enableColumnFilter: false,
-        sortingFn: (rowA, rowB, columnId) => {
-            const left = rowA.getValue<number | undefined>(columnId);
-            const right = rowB.getValue<number | undefined>(columnId);
-            if (left === undefined) return right === undefined ? 0 : 1;
-            if (right === undefined) return -1;
-            return left - right;
-        },
-        cell: (info) => {
-            const instance = info.row.original;
-            const price = resolveRegionalCloudPrice(
-                instance,
-                selectedRegion,
-                pricingUnit,
-                costDuration,
-            );
-            const label = price
-                ? formatRegionalCloudPrice(price, pricingUnit, costDuration)
-                : "View pricing";
-            const title = price
-                ? `Public Linux pay-as-you-go price for ${price.region}; excludes account discounts`
-                : "No numeric public price was collected for this region";
-            return (
-                <a
-                    href={instance.pricingUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    title={title}
-                    aria-label={`${label} for ${instance.instance_type}`}
-                    onClick={(event) => event.stopPropagation()}
-                >
-                    {label}
-                </a>
-            );
-        },
-    },
+    regionalCloudPriceColumn(
+        "pricingUrl",
+        "Linux On Demand cost",
+        "on-demand",
+        "View pricing",
+        resolveRegionalCloudPrice,
+        selectedRegion,
+        pricingUnit,
+        costDuration,
+    ),
+    regionalCloudPriceColumn(
+        "subscriptionPricingUrl",
+        "Linux 1-Year Subscription cost",
+        "subscription",
+        "View subscription pricing",
+        resolveRegionalCloudSubscriptionPrice,
+        selectedRegion,
+        pricingUnit,
+        costDuration,
+    ),
+    regionalCloudPriceColumn(
+        "spotPricingUrl",
+        "Linux Spot cost",
+        "spot",
+        "View spot pricing",
+        resolveRegionalCloudSpotPrice,
+        selectedRegion,
+        pricingUnit,
+        costDuration,
+    ),
     {
         accessorKey: "availableZoneCount",
         header: "Available Zones",

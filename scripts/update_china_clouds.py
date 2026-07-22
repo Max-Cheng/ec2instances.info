@@ -17,7 +17,11 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
-from scripts.china_cloud.common import normalize_on_demand_prices
+from scripts.china_cloud.common import (
+    normalize_on_demand_prices,
+    normalize_spot_prices,
+    normalize_subscription_prices,
+)
 
 
 PROVIDER_SLUGS = ("alibaba", "tencent", "volcengine", "huawei")
@@ -163,15 +167,25 @@ def validate_provider(
         if regions and zones:
             instances_with_availability += 1
 
-        prices = instance.get("onDemandPrices")
-        if prices is not None:
+        for field, label, normalizer in (
+            ("onDemandPrices", "on-demand", normalize_on_demand_prices),
+            (
+                "subscriptionPrices",
+                "one-year subscription",
+                normalize_subscription_prices,
+            ),
+            ("spotPrices", "spot", normalize_spot_prices),
+        ):
+            prices = instance.get(field)
+            if prices is None:
+                continue
             if not isinstance(prices, dict) or not prices:
                 raise ValueError(
-                    f"{slug}/{instance_type}: onDemandPrices must be a non-empty object"
+                    f"{slug}/{instance_type}: {field} must be a non-empty object"
                 )
-            if normalize_on_demand_prices(prices) != prices:
+            if normalizer(prices) != prices:
                 raise ValueError(
-                    f"{slug}/{instance_type}: invalid on-demand price data"
+                    f"{slug}/{instance_type}: invalid {label} price data"
                 )
             unknown_price_regions = set(prices) - set(regions)
             if unknown_price_regions:
@@ -179,10 +193,22 @@ def validate_provider(
                     f"{slug}/{instance_type}: price regions are not in availability: "
                     f"{sorted(unknown_price_regions)}"
                 )
+            if field == "spotPrices":
+                unknown_spot_zones = {
+                    str(price.get("zone") or "")
+                    for price in prices.values()
+                    if price.get("zone")
+                } - set(zones)
+                if unknown_spot_zones:
+                    raise ValueError(
+                        f"{slug}/{instance_type}: spot price zones are not in "
+                        f"availability: {sorted(unknown_spot_zones)}"
+                    )
             price_currencies.update(
                 str(price["currency"]) for price in prices.values()
             )
-            priced_instances += 1
+            if field == "onDemandPrices":
+                priced_instances += 1
 
     if instances_with_availability == 0:
         raise ValueError(f"{slug}: no instance type has regional/AZ availability")
@@ -211,10 +237,21 @@ def build_catalog(
         )
         for slug in PRICE_PROVIDER_SLUGS
     )
+    has_subscription_or_spot_prices = any(
+        instance.get("subscriptionPrices") or instance.get("spotPrices")
+        for provider in ordered.values()
+        for instance in provider.get("instances", [])
+    )
     return {
         # Version 1 remains readable during the first rolling deployment, when
         # unfinished providers can still come from the legacy no-price snapshot.
-        "schemaVersion": 2 if has_required_prices else 1,
+        "schemaVersion": (
+            3
+            if has_required_prices and has_subscription_or_spot_prices
+            else 2
+            if has_required_prices
+            else 1
+        ),
         "generatedAt": generated_at,
         "providers": ordered,
         "totals": {
@@ -228,8 +265,8 @@ def build_catalog(
 
 def validate_catalog(catalog: dict[str, Any]) -> None:
     schema_version = catalog.get("schemaVersion")
-    if schema_version not in {1, 2}:
-        raise ValueError("catalog: schemaVersion must be 1 or 2")
+    if schema_version not in {1, 2, 3}:
+        raise ValueError("catalog: schemaVersion must be 1, 2, or 3")
     generated_at = catalog.get("generatedAt")
     if not isinstance(generated_at, str) or not generated_at.strip():
         raise ValueError("catalog: generatedAt must be a non-empty string")
@@ -292,8 +329,8 @@ def write_step_summary(catalog: dict[str, Any]) -> None:
     lines = [
         "## China cloud catalog refresh",
         "",
-        "| Provider | Unique instance types | Priced types | Regions | Zones | Skipped regions |",
-        "| --- | ---: | ---: | ---: | ---: | ---: |",
+        "| Provider | Instance types | On-demand | 1-year subscription | Spot | Regions | Zones | Skipped regions |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for slug in PROVIDER_SLUGS:
         provider = catalog["providers"].get(slug)
@@ -302,6 +339,8 @@ def write_step_summary(catalog: dict[str, Any]) -> None:
         lines.append(
             f"| {slug} | {len(provider['instances'])} | "
             f"{sum(bool(instance.get('onDemandPrices')) for instance in provider['instances'])} | "
+            f"{sum(bool(instance.get('subscriptionPrices')) for instance in provider['instances'])} | "
+            f"{sum(bool(instance.get('spotPrices')) for instance in provider['instances'])} | "
             f"{provider['regionCount']} | {provider['zoneCount']} | "
             f"{len(provider.get('skippedRegions', []))} |"
         )

@@ -126,6 +126,54 @@ class UpdateChinaCloudsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "no public Linux on-demand prices"):
             update_china_clouds.validate_catalog(value)
 
+    def test_schema_three_validates_subscription_and_spot_prices(self) -> None:
+        value = catalog()
+        item = value["providers"]["alibaba"]["instances"][0]
+        item["subscriptionPrices"] = {
+            "region-1": {
+                "amount": "0.2",
+                "totalAmount": "1752",
+                "currency": "CNY",
+                "unit": "hour",
+                "term": "1-year",
+                "payment": "all-upfront",
+            }
+        }
+        item["spotPrices"] = {
+            "region-1": {
+                "amount": "0.08",
+                "currency": "CNY",
+                "unit": "hour",
+                "zone": "region-1a",
+            }
+        }
+        value = update_china_clouds.build_catalog(
+            value["providers"], OLD_GENERATED_AT
+        )
+
+        self.assertEqual(value["schemaVersion"], 3)
+        update_china_clouds.validate_catalog(value)
+
+        item = value["providers"]["alibaba"]["instances"][0]
+        item["subscriptionPrices"]["region-1"]["term"] = "3-year"
+        with self.assertRaisesRegex(ValueError, "invalid one-year subscription"):
+            update_china_clouds.validate_catalog(value)
+
+        item["subscriptionPrices"]["region-1"]["term"] = "1-year"
+        item["subscriptionPrices"]["region-1"]["amount"] = "999"
+        with self.assertRaisesRegex(ValueError, "invalid one-year subscription"):
+            update_china_clouds.validate_catalog(value)
+
+        item["subscriptionPrices"]["region-1"]["amount"] = "0.2"
+        item["spotPrices"]["region-1"]["zone"] = "unrelated-zone"
+        with self.assertRaisesRegex(ValueError, "spot price zones are not in availability"):
+            update_china_clouds.validate_catalog(value)
+
+        item["spotPrices"]["region-1"]["zone"] = "region-1a"
+        item["spotPrices"]["region-1"]["observedAt"] = "not-a-timestamp"
+        with self.assertRaisesRegex(ValueError, "invalid spot price data"):
+            update_china_clouds.validate_catalog(value)
+
     def test_validate_provider_rejects_mixed_price_currencies(self) -> None:
         value = provider("alibaba")
         second = instance("alibaba.second")

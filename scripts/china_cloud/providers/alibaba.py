@@ -7,10 +7,10 @@ import threading
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
-from decimal import Decimal, InvalidOperation
+from datetime import datetime, timedelta, timezone
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from scripts.china_cloud.common import (
     format_packet_rate,
@@ -33,10 +33,16 @@ READ_TIMEOUT_SECONDS = 20
 PRICE_CONNECT_TIMEOUT_SECONDS = 3
 PRICE_READ_TIMEOUT_SECONDS = 8
 PRICE_TIME_BUDGET_SECONDS = 45
+# Keep the optional subscription/spot enrichment inside the existing 120-second
+# provider refresh envelope. The cache makes this bounded pass converge across
+# daily runs without delaying inventory publication when pricing is throttled.
+EXTENDED_PRICE_TIME_BUDGET_SECONDS = 20
 PRICE_WORKERS = 12
 AVAILABILITY_WORKERS = 8
 # DescribePrice is user-throttled. Keep headroom below the documented 20 QPS.
 PRICE_QUERIES_PER_SECOND = 18
+SPOT_PRICE_MAX_AGE = timedelta(hours=36)
+SUBSCRIPTION_HOURS_PER_YEAR = Decimal(365 * 24)
 PREVIOUS_CATALOG_ENV = "CHINA_CLOUD_PREVIOUS_CATALOG"
 DEFAULT_PREVIOUS_CATALOG = Path("/tmp/china-clouds-previous.json")
 SDK_ACTIONS = (
@@ -46,6 +52,7 @@ SDK_ACTIONS = (
     "DescribeRegions",
     "DescribeZones",
 )
+T = TypeVar("T")
 
 
 def prepare() -> None:
@@ -338,6 +345,111 @@ def _extract_on_demand_price(payload: dict[str, Any]) -> dict[str, str] | None:
     return {"amount": amount, "currency": currency, "unit": "hour"}
 
 
+def _original_instance_amount(price: dict[str, Any]) -> Any:
+    """Return the public instance list amount, never an account trade price."""
+
+    for detail in _nested_list(price, "DetailInfos", "DetailInfo"):
+        resource = str(detail.get("Resource") or "").strip().lower()
+        if resource in {"instancetype", "instance"}:
+            return detail.get("OriginalPrice")
+    return price.get("OriginalPrice")
+
+
+def _extract_subscription_price(payload: dict[str, Any]) -> dict[str, str] | None:
+    """Convert a one-year PrePaid public list total to an effective hourly rate.
+
+    DescribePrice also returns TradePrice and DiscountPrice, which can include
+    account-specific terms. Only OriginalPrice is safe for a public catalog.
+    """
+
+    price_info = payload.get("PriceInfo")
+    if not isinstance(price_info, dict):
+        return None
+    price = price_info.get("Price")
+    if not isinstance(price, dict):
+        return None
+    currency = str(price.get("Currency") or "").strip().upper()
+    if currency not in {"CNY", "USD"}:
+        return None
+
+    total_text = _amount_string(_original_instance_amount(price))
+    if total_text is None:
+        return None
+    total = Decimal(total_text)
+    hourly = (total / SUBSCRIPTION_HOURS_PER_YEAR).quantize(
+        Decimal("0.00000001"),
+        rounding=ROUND_HALF_UP,
+    )
+    hourly_text = _amount_string(hourly)
+    if hourly_text is None:
+        return None
+    return {
+        "amount": hourly_text,
+        "totalAmount": total_text,
+        "currency": currency,
+        "unit": "hour",
+        "term": "1-year",
+        "payment": "all-upfront",
+    }
+
+
+def _parse_utc_timestamp(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
+def _format_utc_timestamp(value: datetime) -> str:
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _extract_spot_price(
+    payload: dict[str, Any],
+    *,
+    zone: str,
+    observed_at: datetime,
+) -> dict[str, str] | None:
+    """Extract the current SpotAsPriceGo transaction price for one zone."""
+
+    price_info = payload.get("PriceInfo")
+    if not isinstance(price_info, dict):
+        return None
+    price = price_info.get("Price")
+    if not isinstance(price, dict):
+        return None
+    currency = str(price.get("Currency") or "").strip().upper()
+    if currency not in {"CNY", "USD"}:
+        return None
+
+    # In a SpotAsPriceGo query, TradePrice is the current spot market price.
+    # OriginalPrice remains the regular pay-as-you-go list price.
+    amount: Any = None
+    for detail in _nested_list(price, "DetailInfos", "DetailInfo"):
+        resource = str(detail.get("Resource") or "").strip().lower()
+        if resource in {"instancetype", "instance"}:
+            amount = detail.get("TradePrice")
+            break
+    if amount is None:
+        amount = price.get("TradePrice")
+    amount_text = _amount_string(amount)
+    if amount_text is None:
+        return None
+    return {
+        "amount": amount_text,
+        "currency": currency,
+        "unit": "hour",
+        "observedAt": _format_utc_timestamp(observed_at),
+        "zone": zone,
+    }
+
+
 def _clean_cached_price_map(value: Any) -> dict[str, dict[str, str]]:
     if not isinstance(value, dict):
         return {}
@@ -357,6 +469,87 @@ def _clean_cached_price_map(value: Any) -> dict[str, dict[str, str]]:
             "unit": "hour",
         }
     return cleaned
+
+
+def _clean_cached_subscription_price_map(
+    value: Any,
+) -> dict[str, dict[str, str]]:
+    if not isinstance(value, dict):
+        return {}
+    cleaned: dict[str, dict[str, str]] = {}
+    for raw_region, raw_price in value.items():
+        region = str(raw_region or "").strip()
+        if not region or not isinstance(raw_price, dict):
+            continue
+        total_amount = _amount_string(raw_price.get("totalAmount"))
+        currency = str(raw_price.get("currency") or "").strip().upper()
+        unit = str(raw_price.get("unit") or "").strip().lower()
+        term = str(raw_price.get("term") or "").strip().lower()
+        payment = str(raw_price.get("payment") or "").strip().lower()
+        if (
+            total_amount is None
+            or currency not in {"CNY", "USD"}
+            or unit != "hour"
+            or term != "1-year"
+            or payment != "all-upfront"
+        ):
+            continue
+        amount = _amount_string(
+            (Decimal(total_amount) / SUBSCRIPTION_HOURS_PER_YEAR).quantize(
+                Decimal("0.00000001"),
+                rounding=ROUND_HALF_UP,
+            )
+        )
+        if amount is None:
+            continue
+        cleaned[region] = {
+            "amount": amount,
+            "totalAmount": total_amount,
+            "currency": currency,
+            "unit": "hour",
+            "term": "1-year",
+            "payment": "all-upfront",
+        }
+    return dict(sorted(cleaned.items()))
+
+
+def _clean_cached_spot_price_map(
+    value: Any,
+    *,
+    now: datetime | None = None,
+    max_age: timedelta = SPOT_PRICE_MAX_AGE,
+) -> dict[str, dict[str, str]]:
+    if not isinstance(value, dict):
+        return {}
+    now = now or datetime.now(timezone.utc)
+    cleaned: dict[str, dict[str, str]] = {}
+    for raw_region, raw_price in value.items():
+        region = str(raw_region or "").strip()
+        if not region or not isinstance(raw_price, dict):
+            continue
+        amount = _amount_string(raw_price.get("amount"))
+        currency = str(raw_price.get("currency") or "").strip().upper()
+        unit = str(raw_price.get("unit") or "").strip().lower()
+        zone = str(raw_price.get("zone") or "").strip()
+        observed_at = _parse_utc_timestamp(raw_price.get("observedAt"))
+        if (
+            amount is None
+            or currency not in {"CNY", "USD"}
+            or unit != "hour"
+            or not zone
+            or observed_at is None
+            or observed_at > now + timedelta(hours=1)
+            or now - observed_at > max_age
+        ):
+            continue
+        cleaned[region] = {
+            "amount": amount,
+            "currency": currency,
+            "unit": "hour",
+            "observedAt": _format_utc_timestamp(observed_at),
+            "zone": zone,
+        }
+    return dict(sorted(cleaned.items()))
 
 
 def _load_cached_prices(path: Path | None = None) -> dict[str, dict[str, dict[str, str]]]:
@@ -389,11 +582,59 @@ def _load_cached_prices(path: Path | None = None) -> dict[str, dict[str, dict[st
     return cached
 
 
+def _load_cached_extended_prices(
+    path: Path | None = None,
+    *,
+    now: datetime | None = None,
+) -> tuple[
+    dict[str, dict[str, dict[str, str]]],
+    dict[str, dict[str, dict[str, str]]],
+]:
+    if path is None:
+        configured = os.environ.get(PREVIOUS_CATALOG_ENV)
+        path = Path(configured) if configured else DEFAULT_PREVIOUS_CATALOG
+    if not path.is_file():
+        return {}, {}
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            catalog = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return {}, {}
+
+    try:
+        instances = catalog["providers"]["alibaba"]["instances"]
+    except (KeyError, TypeError):
+        return {}, {}
+    if not isinstance(instances, list):
+        return {}, {}
+
+    subscription: dict[str, dict[str, dict[str, str]]] = {}
+    spot: dict[str, dict[str, dict[str, str]]] = {}
+    for instance in instances:
+        if not isinstance(instance, dict):
+            continue
+        instance_type = str(instance.get("instanceType") or "").strip()
+        if not instance_type:
+            continue
+        subscription_prices = _clean_cached_subscription_price_map(
+            instance.get("subscriptionPrices")
+        )
+        spot_prices = _clean_cached_spot_price_map(
+            instance.get("spotPrices"),
+            now=now,
+        )
+        if subscription_prices:
+            subscription[instance_type] = subscription_prices
+        if spot_prices:
+            spot[instance_type] = spot_prices
+    return subscription, spot
+
+
 def _rotate_daily(
-    values: list[tuple[str, str]],
+    values: list[T],
     *,
     day_ordinal: int,
-) -> list[tuple[str, str]]:
+) -> list[T]:
     if not values:
         return []
     # A relatively-prime stride changes the head substantially each day. This
@@ -541,6 +782,300 @@ def _fetch_on_demand_prices(
     return result
 
 
+def _fetch_extended_prices(
+    access_key_id: str,
+    access_key_secret: str,
+    availability: dict[str, dict[str, set[str]]],
+    *,
+    cached_subscription_prices: dict[
+        str, dict[str, dict[str, str]]
+    ] | None = None,
+    cached_spot_prices: dict[str, dict[str, dict[str, str]]] | None = None,
+    time_budget_seconds: float = EXTENDED_PRICE_TIME_BUDGET_SECONDS,
+    queries_per_second: float = PRICE_QUERIES_PER_SECOND,
+    workers: int = PRICE_WORKERS,
+    day_ordinal: int | None = None,
+    now: datetime | None = None,
+) -> tuple[
+    dict[str, dict[str, dict[str, str]]],
+    dict[str, dict[str, dict[str, str]]],
+]:
+    """Fetch public one-year subscription and current zonal spot prices.
+
+    Both APIs are single-SKU calls. One region per instance type is considered
+    per run, and the queue rotates daily. Valid subscription quotes are retained
+    while spot quotes expire after 36 hours. The selected availability zone also
+    rotates daily so the bounded collector does not claim one zone is regional.
+    """
+
+    cached_subscription_prices = cached_subscription_prices or {}
+    cached_spot_prices = cached_spot_prices or {}
+    now = now or datetime.now(timezone.utc)
+    if day_ordinal is None:
+        day_ordinal = now.date().toordinal()
+
+    subscription_result: dict[str, dict[str, dict[str, str]]] = {}
+    spot_result: dict[str, dict[str, dict[str, str]]] = {}
+    missing: list[tuple[str, str, bool]] = []
+    refresh: list[tuple[str, str, bool]] = []
+
+    for instance_type in sorted(availability):
+        regions = sorted(availability[instance_type].get("regions", set()))
+        if not regions:
+            continue
+        available_regions = set(regions)
+        available_zones = availability[instance_type].get("zones", set())
+        retained_subscription = {
+            region: price
+            for region, price in _clean_cached_subscription_price_map(
+                cached_subscription_prices.get(instance_type)
+            ).items()
+            if region in available_regions
+        }
+        retained_spot = {
+            region: price
+            for region, price in _clean_cached_spot_price_map(
+                cached_spot_prices.get(instance_type),
+                now=now,
+            ).items()
+            if region in available_regions
+            and (
+                not available_zones
+                or str(price.get("zone") or "") in available_zones
+            )
+        }
+        if retained_subscription:
+            subscription_result[instance_type] = retained_subscription
+        if retained_spot:
+            spot_result[instance_type] = retained_spot
+
+        missing_regions = sorted(
+            (available_regions - set(retained_subscription))
+            | (available_regions - set(retained_spot))
+        )
+        if missing_regions:
+            target = missing_regions[day_ordinal % len(missing_regions)]
+            missing.append(
+                (instance_type, target, target not in retained_subscription)
+            )
+        else:
+            # Subscription totals are stable enough to keep, but spot quotes are
+            # refreshed continuously. Rotate the refreshed region each day.
+            target = regions[day_ordinal % len(regions)]
+            refresh.append((instance_type, target, False))
+
+    queue = _rotate_daily(missing, day_ordinal=day_ordinal)
+    queue.extend(_rotate_daily(refresh, day_ordinal=day_ordinal))
+    if not queue or time_budget_seconds <= 0 or queries_per_second <= 0 or workers <= 0:
+        return subscription_result, spot_result
+
+    deadline = time.monotonic() + time_budget_seconds
+    interval = 1 / queries_per_second
+    rate_lock = threading.Lock()
+    next_slot = [time.monotonic()]
+    thread_clients = threading.local()
+
+    def price_client(region_id: str) -> Any:
+        clients = getattr(thread_clients, "by_region", None)
+        if clients is None:
+            clients = {}
+            thread_clients.by_region = clients
+        client = clients.get(region_id)
+        if client is None:
+            client = _make_price_client(
+                access_key_id,
+                access_key_secret,
+                region_id,
+            )
+            clients[region_id] = client
+        return client
+
+    def acquire_slot() -> bool:
+        with rate_lock:
+            current = time.monotonic()
+            slot = max(current, next_slot[0])
+            if slot >= deadline:
+                return False
+            next_slot[0] = slot + interval
+        delay = slot - time.monotonic()
+        if delay > 0:
+            time.sleep(min(delay, max(0, deadline - time.monotonic())))
+        return time.monotonic() < deadline
+
+    def query(
+        item: tuple[str, str, bool],
+    ) -> tuple[
+        str,
+        str,
+        dict[str, str] | None,
+        dict[str, str] | None,
+        int,
+        int,
+    ]:
+        instance_type, region_id, needs_subscription = item
+        subscription: dict[str, str] | None = None
+        spot: dict[str, str] | None = None
+        subscription_attempted = 0
+        spot_attempted = 0
+
+        if needs_subscription and acquire_slot():
+            subscription_attempted = 1
+            try:
+                payload = _invoke(
+                    price_client(region_id),
+                    "DescribePrice",
+                    RegionId=region_id,
+                    ResourceType="instance",
+                    InstanceType=instance_type,
+                    PriceUnit="Year",
+                    Period=1,
+                    InstanceNetworkType="vpc",
+                    InternetChargeType="PayByTraffic",
+                    InternetMaxBandwidthOut=0,
+                )
+                subscription = _extract_subscription_price(payload)
+            except Exception:
+                # Optional enrichment must not block inventory publication.
+                pass
+
+        regional_zones = sorted(
+            zone
+            for zone in availability[instance_type].get("zones", set())
+            if str(zone).startswith(region_id)
+        )
+        zone_id = (
+            regional_zones[day_ordinal % len(regional_zones)]
+            if regional_zones
+            else ""
+        )
+        if zone_id and acquire_slot():
+            spot_attempted = 1
+            try:
+                payload = _invoke(
+                    price_client(region_id),
+                    "DescribePrice",
+                    RegionId=region_id,
+                    ZoneId=zone_id,
+                    ResourceType="instance",
+                    InstanceType=instance_type,
+                    PriceUnit="Hour",
+                    Period=1,
+                    SpotStrategy="SpotAsPriceGo",
+                    SpotDuration=1,
+                    InstanceNetworkType="vpc",
+                    IoOptimized="optimized",
+                    InternetChargeType="PayByTraffic",
+                    InternetMaxBandwidthOut=0,
+                )
+                spot = _extract_spot_price(
+                    payload,
+                    zone=zone_id,
+                    observed_at=now,
+                )
+                if spot is not None:
+                    available_zones = availability[instance_type].get("zones", set())
+                    if (
+                        available_zones
+                        and str(spot.get("zone") or "") not in available_zones
+                    ):
+                        spot = None
+                    else:
+                        spot = _clean_cached_spot_price_map(
+                            {region_id: spot},
+                            now=now,
+                        ).get(region_id)
+            except Exception:
+                # Some retired/non-I/O-optimized SKUs do not support spot.
+                pass
+
+        return (
+            instance_type,
+            region_id,
+            subscription,
+            spot,
+            subscription_attempted,
+            spot_attempted,
+        )
+
+    subscription_attempted = 0
+    subscription_refreshed = 0
+    spot_attempted = 0
+    spot_refreshed = 0
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = [executor.submit(query, item) for item in queue]
+        for future in as_completed(futures):
+            (
+                instance_type,
+                region_id,
+                subscription,
+                spot,
+                did_attempt_subscription,
+                did_attempt_spot,
+            ) = future.result()
+            subscription_attempted += did_attempt_subscription
+            spot_attempted += did_attempt_spot
+            if subscription is not None:
+                subscription_result.setdefault(instance_type, {})[
+                    region_id
+                ] = subscription
+                subscription_refreshed += 1
+            if spot is not None:
+                spot_result.setdefault(instance_type, {})[region_id] = spot
+                spot_refreshed += 1
+
+    subscription_result = {
+        instance_type: dict(sorted(prices.items()))
+        for instance_type, prices in sorted(subscription_result.items())
+        if prices
+    }
+    spot_result = {
+        instance_type: dict(sorted(prices.items()))
+        for instance_type, prices in sorted(spot_result.items())
+        if prices
+    }
+    print(
+        "alibaba: "
+        f"{subscription_refreshed}/{subscription_attempted} one-year public "
+        "subscription quotes and "
+        f"{spot_refreshed}/{spot_attempted} current zonal spot "
+        "quotes returned within the extended pricing budget",
+        flush=True,
+    )
+    return subscription_result, spot_result
+
+
+def _attach_extended_prices(
+    result: dict[str, Any],
+    subscription_prices: dict[str, dict[str, dict[str, str]]],
+    spot_prices: dict[str, dict[str, dict[str, str]]],
+) -> dict[str, Any]:
+    """Reattach provider-local price maps after the common record merger."""
+
+    instances = result.get("instances")
+    if not isinstance(instances, list):
+        return result
+    for instance in instances:
+        if not isinstance(instance, dict):
+            continue
+        instance_type = str(instance.get("instanceType") or "").strip()
+        available_regions = set(instance.get("regions") or [])
+        subscription = {
+            region: price
+            for region, price in subscription_prices.get(instance_type, {}).items()
+            if region in available_regions
+        }
+        spot = {
+            region: price
+            for region, price in spot_prices.get(instance_type, {}).items()
+            if region in available_regions
+        }
+        if subscription:
+            instance["subscriptionPrices"] = dict(sorted(subscription.items()))
+        if spot:
+            instance["spotPrices"] = dict(sorted(spot.items()))
+    return result
+
+
 def fetch() -> dict[str, Any]:
     access_key_id, access_key_secret = require_env(
         "ALIBABA_CLOUD_ACCESS_KEY_ID",
@@ -581,11 +1116,12 @@ def fetch() -> dict[str, Any]:
     log_progress(
         "alibaba", "pricing", "started", instance_types=len(available)
     )
+    cached_on_demand_prices = _load_cached_prices()
     on_demand_prices = _fetch_on_demand_prices(
         access_key_id,
         access_key_secret,
         available,
-        cached_prices=_load_cached_prices(),
+        cached_prices=cached_on_demand_prices,
     )
     log_progress(
         "alibaba",
@@ -593,6 +1129,47 @@ def fetch() -> dict[str, Any]:
         "completed",
         priced_instance_types=len(on_demand_prices),
     )
+
+    subscription_prices: dict[str, dict[str, dict[str, str]]] = {}
+    spot_prices: dict[str, dict[str, dict[str, str]]] = {}
+    if cached_on_demand_prices:
+        # Preserve the existing first-run behavior: establish and validate a
+        # public on-demand baseline before spending the bounded optional budget.
+        priced_availability = {
+            instance_type: inventory
+            for instance_type, inventory in available.items()
+            if on_demand_prices.get(instance_type)
+        }
+        cached_subscription_prices, cached_spot_prices = (
+            _load_cached_extended_prices()
+        )
+        log_progress(
+            "alibaba",
+            "extended_pricing",
+            "started",
+            instance_types=len(priced_availability),
+        )
+        subscription_prices, spot_prices = _fetch_extended_prices(
+            access_key_id,
+            access_key_secret,
+            priced_availability,
+            cached_subscription_prices=cached_subscription_prices,
+            cached_spot_prices=cached_spot_prices,
+        )
+        log_progress(
+            "alibaba",
+            "extended_pricing",
+            "completed",
+            spot_priced_instance_types=len(spot_prices),
+            subscription_priced_instance_types=len(subscription_prices),
+        )
+    else:
+        log_progress(
+            "alibaba",
+            "extended_pricing",
+            "deferred",
+            reason="on_demand_baseline_not_cached",
+        )
 
     records: list[dict[str, Any]] = []
     for spec in specs:
@@ -631,4 +1208,5 @@ def fetch() -> dict[str, Any]:
             }
         )
 
-    return provider_result("alibaba", records, region_ids, zones)
+    result = provider_result("alibaba", records, region_ids, zones)
+    return _attach_extended_prices(result, subscription_prices, spot_prices)

@@ -48,7 +48,7 @@ export default function RegionalCloudIndex({
 
             const catalog =
                 (await response.json()) as GeneratedRegionalCloudCatalog;
-            if (![1, 2].includes(catalog.schemaVersion)) {
+            if (![1, 2, 3].includes(catalog.schemaVersion)) {
                 throw new Error(
                     `Unsupported China cloud catalog schema ${catalog.schemaVersion}`,
                 );

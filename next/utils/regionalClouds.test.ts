@@ -20,6 +20,12 @@ describe("regional cloud catalog data", () => {
         );
     });
 
+    test("uses the live Alibaba Cloud pricing calculator URL", () => {
+        expect(regionalCloudProviders.alibaba.pricingUrl).toBe(
+            "https://www.alibabacloud.com/pricing-calculator",
+        );
+    });
+
     for (const slug of regionalCloudSlugs) {
         const provider = regionalCloudProviders[slug];
 
@@ -53,6 +59,25 @@ describe("regional cloud catalog data", () => {
                 }
                 for (const [region, price] of Object.entries(
                     instance.onDemandPrices ?? {},
+                )) {
+                    expect(instance.regions).toContain(region);
+                    expect(Number(price.amount)).toBeGreaterThan(0);
+                    expect(["CNY", "USD"]).toContain(price.currency);
+                    expect(price.unit).toBe("hour");
+                }
+                for (const [region, price] of Object.entries(
+                    instance.subscriptionPrices ?? {},
+                )) {
+                    expect(instance.regions).toContain(region);
+                    expect(Number(price.amount)).toBeGreaterThan(0);
+                    expect(Number(price.totalAmount)).toBeGreaterThan(0);
+                    expect(["CNY", "USD"]).toContain(price.currency);
+                    expect(price.unit).toBe("hour");
+                    expect(price.term).toBe("1-year");
+                    expect(price.payment).toBe("all-upfront");
+                }
+                for (const [region, price] of Object.entries(
+                    instance.spotPrices ?? {},
                 )) {
                     expect(instance.regions).toContain(region);
                     expect(Number(price.amount)).toBeGreaterThan(0);

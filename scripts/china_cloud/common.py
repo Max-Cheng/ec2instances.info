@@ -3,7 +3,8 @@ from __future__ import annotations
 import os
 import re
 from collections.abc import Iterable
-from decimal import Decimal, InvalidOperation
+from datetime import datetime, timezone
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 
 
@@ -23,6 +24,8 @@ ARCHITECTURES = {"x86_64", "arm64", "unknown"}
 EMPTY_TEXT = {"", "unknown", "varies by instance type", "not published"}
 
 PRICE_CURRENCIES = {"CNY", "USD"}
+ONE_YEAR_HOURS = Decimal(365 * 24)
+EFFECTIVE_HOURLY_QUANTUM = Decimal("0.00000001")
 
 
 def log_progress(
@@ -145,6 +148,30 @@ def family_from_instance_type(instance_type: str) -> str:
     return match.group(1) if match else value
 
 
+def _normalize_hourly_price(value: Any) -> dict[str, str] | None:
+    if not isinstance(value, dict):
+        return None
+
+    currency = str(value.get("currency") or "").upper().strip()
+    unit = str(value.get("unit") or "").lower().strip()
+    try:
+        amount = Decimal(str(value.get("amount")))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    if (
+        not amount.is_finite()
+        or amount <= 0
+        or currency not in PRICE_CURRENCIES
+        or unit != "hour"
+    ):
+        return None
+    return {
+        "amount": format(amount.normalize(), "f"),
+        "currency": currency,
+        "unit": "hour",
+    }
+
+
 def normalize_on_demand_prices(value: Any) -> dict[str, dict[str, str]]:
     """Normalize positive per-instance hourly prices keyed by real region ID."""
 
@@ -157,25 +184,90 @@ def normalize_on_demand_prices(value: Any) -> dict[str, dict[str, str]]:
         if not region or not isinstance(raw_price, dict):
             continue
 
-        currency = str(raw_price.get("currency") or "").upper().strip()
-        unit = str(raw_price.get("unit") or "").lower().strip()
+        price = _normalize_hourly_price(raw_price)
+        if price:
+            normalized[region] = price
+    return dict(sorted(normalized.items()))
+
+
+def normalize_subscription_prices(value: Any) -> dict[str, dict[str, str]]:
+    """Normalize public one-year all-upfront prices and effective hourly cost."""
+
+    if not isinstance(value, dict):
+        return {}
+
+    normalized: dict[str, dict[str, str]] = {}
+    for raw_region, raw_price in value.items():
+        region = str(raw_region or "").strip()
+        price = _normalize_hourly_price(raw_price)
+        if not region or not price or not isinstance(raw_price, dict):
+            continue
         try:
-            amount = Decimal(str(raw_price.get("amount")))
+            total_amount = Decimal(str(raw_price.get("totalAmount")))
         except (InvalidOperation, TypeError, ValueError):
             continue
         if (
-            not amount.is_finite()
-            or amount <= 0
-            or currency not in PRICE_CURRENCIES
-            or unit != "hour"
+            not total_amount.is_finite()
+            or total_amount <= 0
+            or str(raw_price.get("term") or "").strip() != "1-year"
+            or str(raw_price.get("payment") or "").strip() != "all-upfront"
         ):
             continue
-
+        effective_hourly = (total_amount / ONE_YEAR_HOURS).quantize(
+            EFFECTIVE_HOURLY_QUANTUM,
+            rounding=ROUND_HALF_UP,
+        )
+        actual_hourly = Decimal(price["amount"]).quantize(
+            EFFECTIVE_HOURLY_QUANTUM,
+            rounding=ROUND_HALF_UP,
+        )
+        if actual_hourly != effective_hourly:
+            continue
         normalized[region] = {
-            "amount": format(amount.normalize(), "f"),
-            "currency": currency,
-            "unit": "hour",
+            **price,
+            "amount": format(effective_hourly.normalize(), "f"),
+            "totalAmount": format(total_amount.normalize(), "f"),
+            "term": "1-year",
+            "payment": "all-upfront",
         }
+    return dict(sorted(normalized.items()))
+
+
+def _normalize_utc_timestamp(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def normalize_spot_prices(value: Any) -> dict[str, dict[str, str]]:
+    """Normalize current public spot prices, optionally retaining quote metadata."""
+
+    if not isinstance(value, dict):
+        return {}
+
+    normalized: dict[str, dict[str, str]] = {}
+    for raw_region, raw_price in value.items():
+        region = str(raw_region or "").strip()
+        price = _normalize_hourly_price(raw_price)
+        if not region or not price or not isinstance(raw_price, dict):
+            continue
+        raw_observed_at = str(raw_price.get("observedAt") or "").strip()
+        observed_at = _normalize_utc_timestamp(raw_observed_at)
+        zone = str(raw_price.get("zone") or "").strip()
+        if raw_observed_at and observed_at is None:
+            continue
+        if observed_at:
+            price["observedAt"] = observed_at
+        if zone:
+            price["zone"] = zone
+        normalized[region] = price
     return dict(sorted(normalized.items()))
 
 
@@ -216,9 +308,14 @@ def merge_instances(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
             "regions": sorted({str(item) for item in raw.get("regions", []) if item}),
             "zones": sorted({str(item) for item in raw.get("zones", []) if item}),
         }
-        prices = normalize_on_demand_prices(raw.get("onDemandPrices"))
-        if prices:
-            record["onDemandPrices"] = prices
+        for field, normalizer in (
+            ("onDemandPrices", normalize_on_demand_prices),
+            ("subscriptionPrices", normalize_subscription_prices),
+            ("spotPrices", normalize_spot_prices),
+        ):
+            prices = normalizer(raw.get(field))
+            if prices:
+                record[field] = prices
 
         current = merged.get(instance_type)
         if current is None:
@@ -227,18 +324,19 @@ def merge_instances(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
 
         current["regions"] = sorted(set(current["regions"]) | set(record["regions"]))
         current["zones"] = sorted(set(current["zones"]) | set(record["zones"]))
-        current_prices = current.setdefault("onDemandPrices", {})
-        for region, price in record.get("onDemandPrices", {}).items():
-            existing = current_prices.get(region)
-            if existing is None:
-                current_prices[region] = price
-                continue
-            if existing["currency"] == price["currency"] and Decimal(
-                price["amount"]
-            ) < Decimal(existing["amount"]):
-                current_prices[region] = price
-        if not current_prices:
-            current.pop("onDemandPrices", None)
+        for field in ("onDemandPrices", "subscriptionPrices", "spotPrices"):
+            current_prices = current.setdefault(field, {})
+            for region, price in record.get(field, {}).items():
+                existing = current_prices.get(region)
+                if existing is None:
+                    current_prices[region] = price
+                    continue
+                if existing["currency"] == price["currency"] and Decimal(
+                    price["amount"]
+                ) < Decimal(existing["amount"]):
+                    current_prices[region] = price
+            if not current_prices:
+                current.pop(field, None)
         for key in (
             "family",
             "familyName",

@@ -3,7 +3,8 @@ from __future__ import annotations
 import importlib
 import json
 from collections import defaultdict
-from decimal import Decimal, InvalidOperation
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 
 from scripts.china_cloud.common import (
@@ -19,6 +20,10 @@ from scripts.china_cloud.common import (
 
 SOURCE_URL = "https://cloud.tencent.com/document/product/213/15749"
 REQUEST_TIMEOUT_SECONDS = 20
+OPTIONAL_PRICE_REQUEST_TIMEOUT_SECONDS = 8
+ONE_YEAR_HOURS = Decimal(365 * 24)
+EFFECTIVE_HOURLY_QUANTUM = Decimal("0.00000001")
+OPTIONAL_PRICE_WORKERS = 8
 
 
 def prepare() -> None:
@@ -33,7 +38,10 @@ def prepare() -> None:
     from tencentcloud.region.v20220627 import region_client  # noqa: F401
 
 
-def _client_profile(endpoint: str) -> Any:
+def _client_profile(
+    endpoint: str,
+    request_timeout_seconds: int = REQUEST_TIMEOUT_SECONDS,
+) -> Any:
     from tencentcloud.common.profile.client_profile import ClientProfile
     from tencentcloud.common.profile.http_profile import HttpProfile
 
@@ -41,7 +49,7 @@ def _client_profile(endpoint: str) -> Any:
         protocol="https",
         endpoint=endpoint,
         reqMethod="POST",
-        reqTimeout=REQUEST_TIMEOUT_SECONDS,
+        reqTimeout=request_timeout_seconds,
     )
     client_profile = ClientProfile()
     client_profile.httpProfile = http_profile
@@ -59,14 +67,19 @@ def _make_region_client(secret_id: str, secret_key: str) -> Any:
     )
 
 
-def _make_cvm_client(secret_id: str, secret_key: str, region: str) -> Any:
+def _make_cvm_client(
+    secret_id: str,
+    secret_key: str,
+    region: str,
+    request_timeout_seconds: int = REQUEST_TIMEOUT_SECONDS,
+) -> Any:
     from tencentcloud.common import credential
     from tencentcloud.cvm.v20170312.cvm_client import CvmClient
 
     return CvmClient(
         credential.Credential(secret_id, secret_key),
         region,
-        _client_profile("cvm.tencentcloudapi.com"),
+        _client_profile("cvm.tencentcloudapi.com", request_timeout_seconds),
     )
 
 
@@ -184,6 +197,62 @@ def _public_hourly_price(item: dict[str, Any]) -> Decimal | None:
     return amount
 
 
+def _public_spot_hourly_price(item: dict[str, Any]) -> Decimal | None:
+    price = item.get("Price")
+    if not isinstance(price, dict):
+        return None
+
+    # For a SPOTPAID catalog response, UnitPriceDiscount is the current public
+    # market price. UnitPrice remains the regular postpaid list price, so using
+    # it here would make the spot column duplicate the on-demand column.
+    if str(price.get("ChargeUnit") or "").strip().upper() != "HOUR":
+        return None
+    value = price.get("UnitPriceDiscount")
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        amount = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+    if not amount.is_finite() or amount <= 0:
+        return None
+    return amount
+
+
+def _public_one_year_subscription_total(item: dict[str, Any]) -> Decimal | None:
+    price = item.get("Price")
+    if not isinstance(price, dict):
+        return None
+
+    # ItemPrice.OriginalPriceOneYear is Tencent's public one-year prepaid
+    # total. DiscountPriceOneYear and DiscountOneYear can be account-specific,
+    # so they must never be used for a public catalog.
+    value = price.get("OriginalPriceOneYear")
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        amount = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+    if not amount.is_finite() or amount <= 0:
+        return None
+    return amount
+
+
+def _matches_charge_type(item: dict[str, Any], expected: str) -> bool:
+    charge_type = str(item.get("InstanceChargeType") or "").strip().upper()
+    # Optional billing data is published only when Tencent explicitly echoes
+    # the requested mode; an ambiguous response must never be mislabeled Spot.
+    return charge_type == expected
+
+
+def _declares_charge_type(items: list[dict[str, Any]], expected: str) -> bool:
+    return any(
+        str(item.get("InstanceChargeType") or "").strip().upper() == expected
+        for item in items
+    )
+
+
 def _regional_on_demand_prices(
     quotas: list[dict[str, Any]],
     region: str,
@@ -210,6 +279,125 @@ def _regional_on_demand_prices(
         }
         for instance_type, amount in sorted(lowest_by_type.items())
     }
+
+
+def _regional_subscription_prices(
+    quotas: list[dict[str, Any]],
+    region: str,
+) -> dict[str, dict[str, dict[str, str]]]:
+    lowest_by_type: dict[str, Decimal] = {}
+    for quota in quotas:
+        charge_type = str(quota.get("InstanceChargeType") or "").strip().upper()
+        # Tencent includes OriginalPriceOneYear in the normal postpaid catalog
+        # response as well as the prepaid response. Reuse that public field to
+        # avoid another slow full-catalog call for every region.
+        if (
+            not _is_sellable(quota)
+            or charge_type not in {"", "PREPAID", "POSTPAID_BY_HOUR"}
+        ):
+            continue
+        instance_type = str(quota.get("InstanceType") or "").strip()
+        total = _public_one_year_subscription_total(quota)
+        if not instance_type or total is None:
+            continue
+        current = lowest_by_type.get(instance_type)
+        if current is None or total < current:
+            lowest_by_type[instance_type] = total
+
+    return {
+        instance_type: {
+            region: {
+                "amount": format(
+                    (total / ONE_YEAR_HOURS)
+                    .quantize(EFFECTIVE_HOURLY_QUANTUM, rounding=ROUND_HALF_UP)
+                    .normalize(),
+                    "f",
+                ),
+                "totalAmount": format(total.normalize(), "f"),
+                "currency": "CNY",
+                "unit": "hour",
+                "term": "1-year",
+                "payment": "all-upfront",
+            }
+        }
+        for instance_type, total in sorted(lowest_by_type.items())
+    }
+
+
+def _regional_spot_prices(
+    quotas: list[dict[str, Any]],
+    region: str,
+) -> dict[str, dict[str, dict[str, str]]]:
+    lowest_by_type: dict[str, tuple[Decimal, str]] = {}
+    for quota in quotas:
+        if not _is_sellable(quota) or not _matches_charge_type(quota, "SPOTPAID"):
+            continue
+        instance_type = str(quota.get("InstanceType") or "").strip()
+        zone = str(quota.get("Zone") or "").strip()
+        amount = _public_spot_hourly_price(quota)
+        if not instance_type or amount is None:
+            continue
+        current = lowest_by_type.get(instance_type)
+        if current is None or (amount, zone) < current:
+            lowest_by_type[instance_type] = (amount, zone)
+
+    prices: dict[str, dict[str, dict[str, str]]] = {}
+    for instance_type, (amount, zone) in sorted(lowest_by_type.items()):
+        price = {
+            "amount": format(amount.normalize(), "f"),
+            "currency": "CNY",
+            "unit": "hour",
+        }
+        if zone:
+            price["zone"] = zone
+        prices[instance_type] = {region: price}
+    return prices
+
+
+def _fetch_charge_type_quotas(
+    client: Any,
+    region: str,
+    charge_type: str,
+) -> list[dict[str, Any]]:
+    stage = "subscription_prices" if charge_type == "PREPAID" else "spot_prices"
+    log_progress("tencent", stage, "started", region=region)
+    try:
+        payload = _call(
+            client,
+            "tencentcloud.cvm.v20170312.models",
+            "DescribeZoneInstanceConfigInfosRequest",
+            "DescribeZoneInstanceConfigInfos",
+            Filters=[
+                {
+                    "Name": "instance-charge-type",
+                    "Values": [charge_type],
+                }
+            ],
+        )
+    except Exception as error:
+        # Subscription and spot prices are optional enrichment. A regional
+        # pricing-mode failure must not discard otherwise valid inventory and
+        # on-demand prices from the same API.
+        log_progress(
+            "tencent",
+            stage,
+            "failed",
+            region=region,
+            error=error.__class__.__name__,
+        )
+        return []
+
+    quotas = _items(payload, "InstanceTypeQuotaSet")
+    log_progress("tencent", stage, "completed", region=region, quotas=len(quotas))
+    return quotas
+
+
+def _merge_region_prices(
+    destination: dict[str, dict[str, dict[str, str]]],
+    source: dict[str, dict[str, dict[str, str]]],
+) -> None:
+    for instance_type, prices in source.items():
+        destination.setdefault(instance_type, {}).update(prices)
 
 
 def _merged_record(
@@ -288,6 +476,9 @@ def fetch() -> dict[str, Any]:
 
     all_zones: set[str] = set()
     records: list[dict[str, Any]] = []
+    subscription_prices: dict[str, dict[str, dict[str, str]]] = {}
+    spot_prices: dict[str, dict[str, dict[str, str]]] = {}
+    spot_price_regions: list[str] = []
     for region in regions:
         region_record_start = len(records)
         log_progress("tencent", "region_catalog", "started", region=region)
@@ -349,6 +540,24 @@ def fetch() -> dict[str, Any]:
             priced_instance_types=len(regional_prices),
         )
 
+        # Price fields are billing-mode specific. Only request optional modes
+        # after the API has explicitly echoed the POSTPAID_BY_HOUR filter; this
+        # avoids interpreting ambiguous legacy responses as public catalog data.
+        if _declares_charge_type(quotas, "POSTPAID_BY_HOUR"):
+            _merge_region_prices(
+                subscription_prices,
+                _regional_subscription_prices(quotas, region),
+            )
+            spot_price_regions.append(region)
+        else:
+            log_progress(
+                "tencent",
+                "optional_prices",
+                "skipped",
+                region=region,
+                reason="charge_type_not_declared",
+            )
+
         quota_by_key: dict[tuple[str, str], dict[str, Any]] = {}
         quota_by_type: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for quota in quotas:
@@ -398,4 +607,78 @@ def fetch() -> dict[str, Any]:
             records=len(records) - region_record_start,
         )
 
-    return provider_result("tencent", records, regions, all_zones)
+    # The base Tencent catalog is already a relatively slow sequential scan.
+    # Fetch the one remaining optional billing mode in parallel with separate
+    # regional clients so the Pages workflow stays inside its 120-second guard.
+    if spot_price_regions:
+        log_progress(
+            "tencent",
+            "spot_price_enrichment",
+            "started",
+            regions=len(spot_price_regions),
+            workers=min(OPTIONAL_PRICE_WORKERS, len(spot_price_regions)),
+        )
+
+        def fetch_region_spot_prices(
+            region: str,
+        ) -> dict[str, dict[str, dict[str, str]]]:
+            client = _make_cvm_client(
+                secret_id,
+                secret_key,
+                region,
+                request_timeout_seconds=OPTIONAL_PRICE_REQUEST_TIMEOUT_SECONDS,
+            )
+            quotas = _fetch_charge_type_quotas(client, region, "SPOTPAID")
+            return _regional_spot_prices(quotas, region)
+
+        with ThreadPoolExecutor(
+            max_workers=min(OPTIONAL_PRICE_WORKERS, len(spot_price_regions))
+        ) as executor:
+            futures = {
+                executor.submit(fetch_region_spot_prices, region): region
+                for region in spot_price_regions
+            }
+            for future in as_completed(futures):
+                region = futures[future]
+                try:
+                    regional_spot_prices = future.result()
+                except Exception as error:
+                    log_progress(
+                        "tencent",
+                        "spot_prices",
+                        "failed",
+                        region=region,
+                        error=error.__class__.__name__,
+                    )
+                    continue
+                _merge_region_prices(spot_prices, regional_spot_prices)
+        log_progress(
+            "tencent",
+            "spot_price_enrichment",
+            "completed",
+            priced_instance_types=len(spot_prices),
+            regions=len(spot_price_regions),
+        )
+
+    result = provider_result("tencent", records, regions, all_zones)
+    for instance in result["instances"]:
+        instance_type = str(instance.get("instanceType") or "")
+        available_regions = set(instance.get("regions") or [])
+        available_zones = set(instance.get("zones") or [])
+        for field, prices_by_type in (
+            ("subscriptionPrices", subscription_prices),
+            ("spotPrices", spot_prices),
+        ):
+            prices = {
+                region: price
+                for region, price in prices_by_type.get(instance_type, {}).items()
+                if region in available_regions
+                and (
+                    field != "spotPrices"
+                    or not price.get("zone")
+                    or price.get("zone") in available_zones
+                )
+            }
+            if prices:
+                instance[field] = dict(sorted(prices.items()))
+    return result

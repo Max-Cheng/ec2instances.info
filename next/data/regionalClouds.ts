@@ -21,11 +21,27 @@ export type RegionalCloudCategory =
 
 export type RegionalCloudArchitecture = "x86_64" | "arm64" | "unknown";
 
-export type RegionalCloudOnDemandPrice = {
-    /** Public Linux pay-as-you-go price for one instance. */
+export type RegionalCloudHourlyPrice = {
+    /** Public Linux hourly price for one instance. */
     amount: string;
     currency: "CNY" | "USD";
     unit: "hour";
+};
+
+export type RegionalCloudOnDemandPrice = RegionalCloudHourlyPrice;
+
+export type RegionalCloudSubscriptionPrice = RegionalCloudHourlyPrice & {
+    /** One-year total before account-specific discounts. */
+    totalAmount: string;
+    term: "1-year";
+    payment: "all-upfront";
+};
+
+export type RegionalCloudSpotPrice = RegionalCloudHourlyPrice & {
+    /** Provider timestamp for the spot quote, when returned by the API. */
+    observedAt?: string;
+    /** Availability zone whose quote was collected. */
+    zone?: string;
 };
 
 export type RegionalCloudInstance = {
@@ -41,6 +57,8 @@ export type RegionalCloudInstance = {
     localStorage: string;
     sourceUrl: string;
     onDemandPrices?: Record<string, RegionalCloudOnDemandPrice>;
+    subscriptionPrices?: Record<string, RegionalCloudSubscriptionPrice>;
+    spotPrices?: Record<string, RegionalCloudSpotPrice>;
     regions?: string[];
     zones?: string[];
     availableRegionCount?: number;
@@ -609,7 +627,7 @@ const curatedRegionalCloudProviders: Record<
             "Compare Alibaba Cloud ECS general-purpose, compute-optimized, memory-optimized, Arm, storage, and accelerated instance types.",
         documentationUrl:
             "https://www.alibabacloud.com/help/en/ecs/user-guide/instance-families/",
-        pricingUrl: "https://www.alibabacloud.com/pricing/calculator",
+        pricingUrl: "https://www.alibabacloud.com/pricing-calculator",
         lastReviewed: "2026-07-10",
         coverageNote:
             "Representative current-generation families. Availability and assigned processor can vary by region.",
@@ -688,6 +706,12 @@ export function resolveRegionalCloudProvider(
     const pricedInstanceCount = generated.instances.filter(
         (instance) => Object.keys(instance.onDemandPrices ?? {}).length > 0,
     ).length;
+    const subscriptionPricedInstanceCount = generated.instances.filter(
+        (instance) => Object.keys(instance.subscriptionPrices ?? {}).length > 0,
+    ).length;
+    const spotPricedInstanceCount = generated.instances.filter(
+        (instance) => Object.keys(instance.spotPrices ?? {}).length > 0,
+    ).length;
 
     return {
         ...curated,
@@ -700,6 +724,14 @@ export function resolveRegionalCloudProvider(
         coverageNote: `Live API snapshot across ${generated.regionCount} regions and ${generated.zoneCount} availability zones.${
             pricedInstanceCount
                 ? ` ${pricedInstanceCount} instance types include public Linux on-demand pricing.`
+                : ""
+        }${
+            subscriptionPricedInstanceCount
+                ? ` ${subscriptionPricedInstanceCount} include public one-year subscription pricing.`
+                : ""
+        }${
+            spotPricedInstanceCount
+                ? ` ${spotPricedInstanceCount} include public spot pricing.`
                 : ""
         }${
             generated.skippedRegions?.length

@@ -11,6 +11,8 @@ from scripts.china_cloud.common import (
     merge_instances,
     normalize_on_demand_prices,
     normalize_architecture,
+    normalize_spot_prices,
+    normalize_subscription_prices,
 )
 
 
@@ -51,6 +53,24 @@ class CommonTests(unittest.TestCase):
                 "onDemandPrices": {
                     "cn-a": {"amount": "0.42", "currency": "cny", "unit": "HOUR"}
                 },
+                "subscriptionPrices": {
+                    "cn-a": {
+                        "amount": "0.30",
+                        "totalAmount": "2628.00",
+                        "currency": "cny",
+                        "unit": "HOUR",
+                        "term": "1-year",
+                        "payment": "all-upfront",
+                    }
+                },
+                "spotPrices": {
+                    "cn-a": {
+                        "amount": "0.12",
+                        "currency": "cny",
+                        "unit": "HOUR",
+                        "zone": "cn-a-1",
+                    }
+                },
             },
             {
                 "instanceType": "ecs.g8i.large",
@@ -63,6 +83,24 @@ class CommonTests(unittest.TestCase):
                 "onDemandPrices": {
                     "cn-b": {"amount": "0.55", "currency": "CNY", "unit": "hour"},
                     "cn-a": {"amount": "0.40", "currency": "CNY", "unit": "hour"},
+                },
+                "subscriptionPrices": {
+                    "cn-b": {
+                        "amount": "0.35",
+                        "totalAmount": "3066",
+                        "currency": "CNY",
+                        "unit": "hour",
+                        "term": "1-year",
+                        "payment": "all-upfront",
+                    }
+                },
+                "spotPrices": {
+                    "cn-b": {
+                        "amount": "0.15",
+                        "currency": "CNY",
+                        "unit": "hour",
+                        "observedAt": "2026-07-22T00:00:00Z",
+                    }
                 },
             },
         ]
@@ -80,6 +118,44 @@ class CommonTests(unittest.TestCase):
                 "cn-b": {"amount": "0.55", "currency": "CNY", "unit": "hour"},
             },
         )
+        self.assertEqual(
+            merged[0]["subscriptionPrices"],
+            {
+                "cn-a": {
+                    "amount": "0.3",
+                    "totalAmount": "2628",
+                    "currency": "CNY",
+                    "unit": "hour",
+                    "term": "1-year",
+                    "payment": "all-upfront",
+                },
+                "cn-b": {
+                    "amount": "0.35",
+                    "totalAmount": "3066",
+                    "currency": "CNY",
+                    "unit": "hour",
+                    "term": "1-year",
+                    "payment": "all-upfront",
+                },
+            },
+        )
+        self.assertEqual(
+            merged[0]["spotPrices"],
+            {
+                "cn-a": {
+                    "amount": "0.12",
+                    "currency": "CNY",
+                    "unit": "hour",
+                    "zone": "cn-a-1",
+                },
+                "cn-b": {
+                    "amount": "0.15",
+                    "currency": "CNY",
+                    "unit": "hour",
+                    "observedAt": "2026-07-22T00:00:00Z",
+                },
+            },
+        )
 
     def test_normalizes_only_positive_hourly_prices(self) -> None:
         self.assertEqual(
@@ -93,6 +169,79 @@ class CommonTests(unittest.TestCase):
             ),
             {
                 "cn-a": {"amount": "1.23", "currency": "CNY", "unit": "hour"}
+            },
+        )
+
+    def test_rejects_mislabeled_subscription_and_spot_prices(self) -> None:
+        self.assertEqual(
+            normalize_subscription_prices(
+                {
+                    "cn-a": {
+                        "amount": "0.3",
+                        "totalAmount": "2628",
+                        "currency": "CNY",
+                        "unit": "hour",
+                        "term": "1-year",
+                        "payment": "all-upfront",
+                    },
+                    "cn-b": {
+                        "amount": "0.2",
+                        "totalAmount": "1752",
+                        "currency": "CNY",
+                        "unit": "hour",
+                        "term": "3-year",
+                        "payment": "all-upfront",
+                    },
+                    "cn-c": {
+                        "amount": "999",
+                        "totalAmount": "2628",
+                        "currency": "CNY",
+                        "unit": "hour",
+                        "term": "1-year",
+                        "payment": "all-upfront",
+                    },
+                }
+            ),
+            {
+                "cn-a": {
+                    "amount": "0.3",
+                    "totalAmount": "2628",
+                    "currency": "CNY",
+                    "unit": "hour",
+                    "term": "1-year",
+                    "payment": "all-upfront",
+                }
+            },
+        )
+        self.assertEqual(
+            normalize_spot_prices(
+                {
+                    "cn-a": {
+                        "amount": "0.12",
+                        "currency": "CNY",
+                        "unit": "hour",
+                        "zone": "cn-a-1",
+                    },
+                    "cn-b": {
+                        "amount": "0",
+                        "currency": "CNY",
+                        "unit": "hour",
+                    },
+                    "cn-c": {
+                        "amount": "0.1",
+                        "currency": "CNY",
+                        "unit": "hour",
+                        "observedAt": "not-a-timestamp",
+                    },
+                }
+            ),
+            {
+                "cn-a": {
+                    "amount": "0.12",
+                    "currency": "CNY",
+                    "unit": "hour",
+                    "zone": "cn-a-1",
+                }
             },
         )
 

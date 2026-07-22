@@ -13,6 +13,11 @@ on:
         # A fresh runner retries at 03:23 only when the deployed catalog is stale.
         - cron: "23 19 * * *"
     workflow_dispatch:
+        inputs:
+            transport_retry:
+                description: Internal fresh-runner retry attempt
+                required: false
+                default: "0"
 
 concurrency:
     group: github-pages
@@ -21,6 +26,7 @@ concurrency:
     cancel-in-progress: false
 
 permissions:
+    actions: write
     contents: read
     pages: write
     id-token: write
@@ -252,19 +258,6 @@ jobs:
                     "${collector_args[@]}" \
                     || status=$?
 
-                  if [ "$status" -eq 124 ] && \
-                     [ "${{ steps.previous_china_cloud_catalog.outputs.available }}" = "true" ] && \
-                     [ ! -e "$failure_marker" ] && \
-                     [ -s "$checkpoint" ] && \
-                     [ ! -s "$completion_marker" ]; then
-                    echo "::warning title=China cloud refresh made no progress::Retrying all providers once with a 120-second budget."
-                    status=0
-                    timeout --signal=TERM --kill-after=15s 120s \
-                      .venv-china-clouds/bin/python -m scripts.update_china_clouds \
-                      "${collector_args[@]}" \
-                      || status=$?
-                  fi
-
                   if [ "$status" -eq 124 ]; then
                     if [ -e "$failure_marker" ]; then
                       echo "::error title=China cloud provider failed::At least one provider raised an explicit error before the overall timeout."
@@ -275,7 +268,13 @@ jobs:
                       exit "$status"
                     fi
                     if [ ! -s "$completion_marker" ]; then
-                      echo "::error title=China cloud refresh made no progress::Both attempts timed out before any provider completed; refusing to report a stale catalog as success."
+                      if [ "${{ inputs.transport_retry || '0' }}" = "0" ]; then
+                        echo "::warning title=China cloud refresh made no progress::Dispatching one retry on a fresh GitHub runner."
+                        echo "retry=true" >> "$GITHUB_OUTPUT"
+                        echo "publish=false" >> "$GITHUB_OUTPUT"
+                        exit 0
+                      fi
+                      echo "::error title=China cloud refresh made no progress::The fresh-runner retry also timed out before any provider completed."
                       exit 1
                     fi
                     echo "::warning title=China cloud refresh timed out::Publishing only validated provider progress; unfinished providers retain their previous snapshot."
@@ -298,6 +297,16 @@ jobs:
                     echo "No provider completed with changed data; skipping Pages deployment."
                   fi
                   echo "publish=$publish" >> "$GITHUB_OUTPUT"
+
+            - name: Retry zero-progress refresh on a fresh runner
+              if: steps.china_cloud_refresh.outputs.retry == 'true'
+              env:
+                  GH_TOKEN: ${{ github.token }}
+              run: |
+                  gh workflow run pages.yml \
+                    --repo "$GITHUB_REPOSITORY" \
+                    --ref "$GITHUB_REF_NAME" \
+                    --field transport_retry=1
 
             - name: Upload China cloud data snapshot
               if: github.event_name != 'push' && steps.china_cloud_refresh.outputs.publish == 'true'

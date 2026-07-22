@@ -53,23 +53,28 @@ catalog with zero covered regions and zones.
 
 ## Updating the catalogs
 
-The fork's `Daily GitHub Pages` workflow runs daily at 02:23 Asia/Shanghai and
-can also be started manually. Provider calls run concurrently. Pushes to
-`main` perform the full Node verification and static build once, then cache the
-validated Pages shell by frontend content. Scheduled and manual runs restore
-that shell, refresh only the Python/API data, and overlay the normalized
+The fork's `Daily GitHub Pages` workflow runs at 02:23 Asia/Shanghai, with a
+03:23 backup schedule that refreshes only when the deployed catalog is stale;
+it can also be started manually. Pushes to `main` run the full Node verification
+and static build but reuse the validated deployed catalog without installing
+vendor SDKs or calling provider APIs. Scheduled and manual runs restore the
+cached Pages shell, load the four SDKs serially on the coordinator thread, then
+run the independent provider API calls concurrently and overlay the normalized
 snapshot at `/data/china-clouds.json`. A cache miss safely falls back to
 rebuilding the shell, but daily refreshes normally skip Node installation,
-tests, and Next.js. Every event first tries to validate and reuse the deployed
-catalog, so bounded Alibaba price coverage accumulates instead of resetting on
-pushes. The provider refresh has a three-minute hard deadline and the complete
-job has a fifteen-minute ceiling. If a provider SDK or network path stalls,
-the workflow records a warning and publishes completed, validated provider
-checkpoints while unfinished providers retain their previous snapshot. A first
-push with no previous snapshot still fails on timeout. If nothing changed, a
-scheduled or manual run skips the redundant Pages deployment. Every run still
-fails on explicit provider, authentication, schema, or catalog-validation
-errors. Starting a newer run also cancels an older in-progress run.
+tests, and Next.js. Every event first validates the deployed catalog, so bounded
+Alibaba price coverage accumulates instead of resetting on code pushes.
+
+The provider refresh has a 120-second hard deadline and the complete job has a
+fifteen-minute ceiling. If no provider completes before that deadline, the
+workflow dispatches one retry on a fresh GitHub runner; a second zero-progress
+attempt fails instead of reporting a stale refresh as successful. If at least
+one provider completes, the workflow can publish its validated checkpoint while
+unfinished providers retain their previous snapshot. Explicit provider,
+authentication, schema, and catalog-validation errors always fail. If nothing
+changed, a scheduled or manual run skips the redundant Pages deployment. Runs
+share one non-cancelling concurrency queue so a code push cannot interrupt an
+active catalog refresh.
 
 To run the ingestion locally:
 

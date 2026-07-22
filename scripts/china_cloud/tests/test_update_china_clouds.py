@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 from unittest import mock
 
@@ -179,8 +181,10 @@ class UpdateChinaCloudsTests(unittest.TestCase):
                 update_china_clouds, "parse_args", return_value=args
             ), mock.patch.object(
                 update_china_clouds, "fetch_provider", side_effect=fetch
-            ):
+            ), redirect_stderr(io.StringIO()) as stderr:
                 self.assertEqual(update_china_clouds.main(), 1)
+
+            self.assertIn("catalog refresh failed", stderr.getvalue())
 
             checkpoint = update_china_clouds.load_catalog(args.checkpoint)
             self.assertEqual(checkpoint["generatedAt"], OLD_GENERATED_AT)
@@ -212,8 +216,10 @@ class UpdateChinaCloudsTests(unittest.TestCase):
                 update_china_clouds,
                 "fetch_provider",
                 side_effect=RuntimeError("credentials rejected"),
-            ):
+            ), redirect_stderr(io.StringIO()) as stderr:
                 self.assertEqual(update_china_clouds.main(), 1)
+
+            self.assertIn("credentials rejected", stderr.getvalue())
 
             self.assertTrue(args.failure_marker.exists())
             self.assertFalse(args.completion_marker.exists())

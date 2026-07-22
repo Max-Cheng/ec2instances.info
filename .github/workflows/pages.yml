@@ -10,11 +10,15 @@ on:
     schedule:
         # 02:23 Asia/Shanghai (UTC+8). Avoid the busy top of the hour.
         - cron: "23 18 * * *"
+        # A fresh runner retries at 03:23 only when the deployed catalog is stale.
+        - cron: "23 19 * * *"
     workflow_dispatch:
 
 concurrency:
     group: github-pages
-    cancel-in-progress: true
+    # Queue UI-only pushes behind a real refresh instead of cancelling it and
+    # redeploying yesterday's catalog.
+    cancel-in-progress: false
 
 permissions:
     contents: read
@@ -132,15 +136,55 @@ jobs:
               with:
                   python-version: "3.12"
 
+            - name: Download and validate deployed China cloud catalog
+              id: previous_china_cloud_catalog
+              run: |
+                  previous=/tmp/china-clouds-previous.json
+                  if ! curl --fail --location --retry 3 --retry-all-errors \
+                      --connect-timeout 5 --max-time 30 \
+                      "${{ steps.pages.outputs.base_url }}/data/china-clouds.json?run=${GITHUB_RUN_ID}" \
+                      --output "$previous"; then
+                    rm -f "$previous"
+                    echo "::error title=No deployed China cloud catalog::Refusing to deploy or refresh without a validated baseline."
+                    exit 1
+                  fi
+                  python -m scripts.update_china_clouds \
+                    --validate-only "$previous"
+                  echo "available=true" >> "$GITHUB_OUTPUT"
+
+            - name: Plan China cloud refresh
+              id: china_cloud_plan
+              run: |
+                  refresh=true
+                  reason=requested
+
+                  if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+                    refresh=false
+                    reason=code-push-reuses-deployed-catalog
+                  elif [ "$GITHUB_EVENT_NAME" = "schedule" ]; then
+                    generated_at=$(jq -r '.generatedAt' /tmp/china-clouds-previous.json)
+                    generated_epoch=$(date -u -d "$generated_at" +%s)
+                    now_epoch=$(date -u +%s)
+                    age_seconds=$((now_epoch - generated_epoch))
+                    if [ "$age_seconds" -ge 0 ] && [ "$age_seconds" -lt 10800 ]; then
+                      refresh=false
+                      reason=deployed-catalog-is-fresh
+                    fi
+                  fi
+
+                  echo "refresh=$refresh" >> "$GITHUB_OUTPUT"
+                  echo "China cloud refresh plan: refresh=$refresh reason=$reason"
+
             - name: Restore China cloud SDK virtual environment
               id: china_cloud_venv
+              if: steps.china_cloud_plan.outputs.refresh == 'true'
               uses: actions/cache/restore@v5
               with:
                   path: .venv-china-clouds
                   key: china-cloud-venv-v1-${{ runner.os }}-${{ steps.setup_python.outputs.python-version }}-${{ hashFiles('scripts/china_cloud/requirements.txt') }}
 
             - name: Install China cloud SDKs
-              if: steps.china_cloud_venv.outputs.cache-hit != 'true'
+              if: steps.china_cloud_plan.outputs.refresh == 'true' && steps.china_cloud_venv.outputs.cache-hit != 'true'
               run: |
                   python -m venv --copies .venv-china-clouds
                   .venv-china-clouds/bin/python -m pip install \
@@ -148,35 +192,18 @@ jobs:
                     --requirement scripts/china_cloud/requirements.txt
 
             - name: Save China cloud SDK virtual environment
-              if: steps.china_cloud_venv.outputs.cache-hit != 'true'
+              if: steps.china_cloud_plan.outputs.refresh == 'true' && steps.china_cloud_venv.outputs.cache-hit != 'true'
               uses: actions/cache/save@v5
               with:
                   path: .venv-china-clouds
                   key: china-cloud-venv-v1-${{ runner.os }}-${{ steps.setup_python.outputs.python-version }}-${{ hashFiles('scripts/china_cloud/requirements.txt') }}
 
-            - name: Download previous China cloud catalog
-              id: previous_china_cloud_catalog
-              run: |
-                  previous=/tmp/china-clouds-previous.json
-                  if curl --fail --location --retry 3 --retry-all-errors \
-                      --connect-timeout 5 --max-time 30 \
-                      "${{ steps.pages.outputs.base_url }}/data/china-clouds.json?run=${GITHUB_RUN_ID}" \
-                      --output "$previous"; then
-                    .venv-china-clouds/bin/python -m scripts.update_china_clouds \
-                      --validate-only "$previous"
-                    echo "available=true" >> "$GITHUB_OUTPUT"
-                  elif [ "$GITHUB_EVENT_NAME" = "push" ]; then
-                    rm -f "$previous"
-                    echo "::warning title=No previous China cloud catalog::Starting this push without cached provider data."
-                    echo "available=false" >> "$GITHUB_OUTPUT"
-                  else
-                    exit 1
-                  fi
-
-            - name: Refresh complete China cloud catalogs
+            - name: Prepare complete China cloud catalog
               id: china_cloud_refresh
               env:
                   PYTHONUNBUFFERED: "1"
+                  # Bound glibc DNS retries as well as the SDK socket timeouts.
+                  RES_OPTIONS: "timeout:2 attempts:2"
                   ALIBABA_CLOUD_ACCESS_KEY_ID: ${{ secrets.ALIBABA_CLOUD_ACCESS_KEY_ID }}
                   ALIBABA_CLOUD_ACCESS_KEY_SECRET: ${{ secrets.ALIBABA_CLOUD_ACCESS_KEY_SECRET }}
                   TENCENTCLOUD_SECRET_ID: ${{ secrets.TENCENTCLOUD_SECRET_ID }}
@@ -186,6 +213,26 @@ jobs:
                   HUAWEI_ACCESS_KEY_ID: ${{ secrets.HUAWEI_ACCESS_KEY_ID }}
                   HUAWEI_SECRET_ACCESS_KEY: ${{ secrets.HUAWEI_SECRET_ACCESS_KEY }}
               run: |
+                  previous=/tmp/china-clouds-previous.json
+                  if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+                    echo "Reusing the validated deployed catalog; provider APIs are not called."
+                    install -d next/data next/public/data
+                    install -m 0644 "$previous" \
+                      next/data/regionalClouds.generated.json
+                    install -m 0644 "$previous" \
+                      next/public/data/china-clouds.json
+                    cmp "$previous" next/data/regionalClouds.generated.json
+                    cmp "$previous" next/public/data/china-clouds.json
+                    echo "publish=true" >> "$GITHUB_OUTPUT"
+                    exit 0
+                  fi
+
+                  if [ "${{ steps.china_cloud_plan.outputs.refresh }}" != "true" ]; then
+                    echo "The deployed catalog is fresh; skipping the backup refresh."
+                    echo "publish=false" >> "$GITHUB_OUTPUT"
+                    exit 0
+                  fi
+
                   checkpoint=/tmp/china-clouds-checkpoint.json
                   failure_marker=/tmp/china-clouds-provider-failed
                   completion_marker=/tmp/china-clouds-provider-completed
@@ -253,7 +300,7 @@ jobs:
                   echo "publish=$publish" >> "$GITHUB_OUTPUT"
 
             - name: Upload China cloud data snapshot
-              if: steps.china_cloud_refresh.outputs.publish == 'true'
+              if: github.event_name != 'push' && steps.china_cloud_refresh.outputs.publish == 'true'
               uses: actions/upload-artifact@v6
               with:
                   name: china-cloud-catalog-${{ github.run_id }}

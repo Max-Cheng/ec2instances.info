@@ -239,6 +239,58 @@ jobs:
                     exit 0
                   fi
 
+                  proxy_configured=false
+                  for proxy_name in HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy; do
+                    if [ -n "${!proxy_name:-}" ]; then
+                      proxy_configured=true
+                    fi
+                    unset "$proxy_name"
+                  done
+                  echo "China cloud transport: inherited_proxy_configured=$proxy_configured direct_requests=true"
+
+                  probe_dir=/tmp/china-cloud-transport
+                  install -d "$probe_dir"
+                  probe_names=()
+                  probe_pids=()
+                  while read -r name endpoint; do
+                    probe_names+=("$name")
+                    (
+                      probe_status=0
+                      http_code=$(curl --noproxy '*' --silent --show-error \
+                        --output /dev/null --connect-timeout 3 --max-time 10 \
+                        --write-out '%{http_code}' "$endpoint") \
+                        || probe_status=$?
+                      echo "$probe_status" > "$probe_dir/$name"
+                      echo "$name: transport_probe_status=$probe_status http_code=${http_code:-000}"
+                    ) &
+                    probe_pids+=("$!")
+                  done <<'EOF'
+                  alibaba https://ecs.cn-hangzhou.aliyuncs.com
+                  tencent https://region.tencentcloudapi.com
+                  volcengine https://ecs.cn-beijing.volcengineapi.com
+                  huawei https://iam.cn-north-4.myhuaweicloud.com
+                  EOF
+                  for probe_pid in "${probe_pids[@]}"; do
+                    wait "$probe_pid"
+                  done
+
+                  transport_failures=0
+                  for name in "${probe_names[@]}"; do
+                    if [ "$(<"$probe_dir/$name")" -ne 0 ]; then
+                      transport_failures=$((transport_failures + 1))
+                    fi
+                  done
+                  if [ "$transport_failures" -eq "${#probe_names[@]}" ]; then
+                    if [ "${{ inputs.transport_retry || '0' }}" = "0" ]; then
+                      echo "::warning title=China cloud transport unavailable::All provider endpoints failed; dispatching one retry on a fresh GitHub runner."
+                      echo "retry=true" >> "$GITHUB_OUTPUT"
+                      echo "publish=false" >> "$GITHUB_OUTPUT"
+                      exit 0
+                    fi
+                    echo "::error title=China cloud transport unavailable::All provider endpoints also failed on the fresh-runner retry."
+                    exit 1
+                  fi
+
                   checkpoint=/tmp/china-clouds-checkpoint.json
                   failure_marker=/tmp/china-clouds-provider-failed
                   completion_marker=/tmp/china-clouds-provider-completed

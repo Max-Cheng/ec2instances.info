@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import faulthandler
 import importlib
 import json
 import os
@@ -369,35 +370,57 @@ def main() -> int:
             build_catalog(providers, checkpoint_generated_at),
         )
 
-    # Each provider has independent credentials, endpoints, and rate limits.
-    # Fetch them concurrently so the daily job takes roughly as long as the
-    # slowest cloud instead of the sum of all four clouds.
-    with ThreadPoolExecutor(max_workers=len(selected)) as executor:
-        futures = {
-            executor.submit(fetch_provider_guarded, slug, args.failure_marker): slug
-            for slug in selected
-        }
-        failed = False
-        for future in as_completed(futures):
-            slug = futures[future]
-            try:
-                fetched[slug] = future.result()
-                providers[slug] = fetched[slug]
-                if args.checkpoint and previous:
-                    atomic_write(
-                        args.checkpoint,
-                        build_catalog(providers, checkpoint_generated_at),
+    stack_dump_seconds = float(
+        os.environ.get("CHINA_CLOUD_STACK_DUMP_SECONDS", "0") or 0
+    )
+    stack_dumps_enabled = stack_dump_seconds > 0
+    if stack_dumps_enabled:
+        print(
+            f"transport diagnostics: dumping all Python thread stacks every "
+            f"{stack_dump_seconds:g}s while providers run",
+            flush=True,
+        )
+        faulthandler.dump_traceback_later(
+            stack_dump_seconds,
+            repeat=True,
+            file=sys.stderr,
+        )
+
+    failed = False
+    try:
+        # Each provider has independent credentials, endpoints, and rate limits.
+        # Fetch them concurrently so the daily job takes roughly as long as the
+        # slowest cloud instead of the sum of all four clouds.
+        with ThreadPoolExecutor(max_workers=len(selected)) as executor:
+            futures = {
+                executor.submit(
+                    fetch_provider_guarded, slug, args.failure_marker
+                ): slug
+                for slug in selected
+            }
+            for future in as_completed(futures):
+                slug = futures[future]
+                try:
+                    fetched[slug] = future.result()
+                    providers[slug] = fetched[slug]
+                    if args.checkpoint and previous:
+                        atomic_write(
+                            args.checkpoint,
+                            build_catalog(providers, checkpoint_generated_at),
+                        )
+                        if args.completion_marker:
+                            record_provider_completion(args.completion_marker, slug)
+                except Exception as error:
+                    failed = True
+                    print(
+                        f"::error title={slug} catalog refresh failed::"
+                        f"{error.__class__.__name__}: {redact(error)}",
+                        file=sys.stderr,
+                        flush=True,
                     )
-                    if args.completion_marker:
-                        record_provider_completion(args.completion_marker, slug)
-            except Exception as error:
-                failed = True
-                print(
-                    f"::error title={slug} catalog refresh failed::"
-                    f"{error.__class__.__name__}: {redact(error)}",
-                    file=sys.stderr,
-                    flush=True,
-                )
+    finally:
+        if stack_dumps_enabled:
+            faulthandler.cancel_dump_traceback_later()
 
     if failed:
         return 1

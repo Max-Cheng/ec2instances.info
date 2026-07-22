@@ -208,6 +208,7 @@ jobs:
               id: china_cloud_refresh
               env:
                   PYTHONUNBUFFERED: "1"
+                  CHINA_CLOUD_STACK_DUMP_SECONDS: "30"
                   # Bound glibc DNS retries as well as the SDK socket timeouts.
                   RES_OPTIONS: "timeout:2 attempts:2"
                   ALIBABA_CLOUD_ACCESS_KEY_ID: ${{ secrets.ALIBABA_CLOUD_ACCESS_KEY_ID }}
@@ -255,13 +256,17 @@ jobs:
                   while read -r name endpoint; do
                     probe_names+=("$name")
                     (
+                      host=${endpoint#https://}
+                      dns_status=0
+                      timeout 5s getent ahostsv4 "$host" >/dev/null \
+                        || dns_status=$?
                       probe_status=0
                       http_code=$(curl --noproxy '*' --silent --show-error \
                         --output /dev/null --connect-timeout 3 --max-time 10 \
                         --write-out '%{http_code}' "$endpoint") \
                         || probe_status=$?
                       echo "$probe_status" > "$probe_dir/$name"
-                      echo "$name: transport_probe_status=$probe_status http_code=${http_code:-000}"
+                      echo "$name: dns_probe_status=$dns_status transport_probe_status=$probe_status http_code=${http_code:-000}"
                     ) &
                     probe_pids+=("$!")
                   done <<'EOF'

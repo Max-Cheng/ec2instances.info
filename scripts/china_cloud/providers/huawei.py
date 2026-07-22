@@ -10,6 +10,7 @@ from typing import Any
 from scripts.china_cloud.common import (
     family_from_instance_type,
     format_packet_rate,
+    log_progress,
     number,
     provider_result,
     require_env,
@@ -700,6 +701,7 @@ def fetch() -> dict[str, Any]:
     iam_client = _build_iam_client(access_key, secret_key, sdk)
     bss_client = _build_bss_client(access_key, secret_key, sdk)
 
+    log_progress("huawei", "iam_discovery", "started")
     region_response = iam_client.keystone_list_regions(
         sdk.KeystoneListRegionsRequest()
     )
@@ -710,12 +712,16 @@ def fetch() -> dict[str, Any]:
         _value(region_response, "regions", []) or [],
         _value(project_response, "projects", []) or [],
     )
+    log_progress(
+        "huawei", "iam_discovery", "completed", regions=len(region_projects)
+    )
 
     records: list[dict[str, Any]] = []
     regions: list[str] = []
     all_zones: set[str] = set()
     skipped_regions: list[str] = []
     for region_id, project_id in region_projects:
+        log_progress("huawei", "region_catalog", "started", region=region_id)
         try:
             ecs_client = _build_ecs_client(
                 access_key,
@@ -724,18 +730,44 @@ def fetch() -> dict[str, Any]:
                 region_id,
                 sdk,
             )
+            log_progress("huawei", "zones", "started", region=region_id)
             zone_ids = _list_zone_ids(ecs_client, sdk)
+            log_progress(
+                "huawei", "zones", "completed", region=region_id, count=len(zone_ids)
+            )
             region_records: list[dict[str, Any]] = []
+            log_progress("huawei", "flavors", "started", region=region_id)
             for flavor in _list_flavors(ecs_client, sdk):
                 record = _record_for_flavor(flavor, region_id, zone_ids)
                 if record is not None:
                     region_records.append(record)
+            log_progress(
+                "huawei",
+                "flavors",
+                "completed",
+                region=region_id,
+                records=len(region_records),
+            )
+            log_progress(
+                "huawei",
+                "pricing",
+                "started",
+                region=region_id,
+                instance_types=len(region_records),
+            )
             regional_prices = _regional_on_demand_prices(
                 bss_client,
                 sdk,
                 project_id,
                 region_id,
                 region_records,
+            )
+            log_progress(
+                "huawei",
+                "pricing",
+                "completed",
+                region=region_id,
+                priced_instance_types=len(regional_prices),
             )
             for record in region_records:
                 if price := regional_prices.get(record["instanceType"]):
@@ -745,11 +777,19 @@ def fetch() -> dict[str, Any]:
                 raise
             skipped_regions.append(region_id)
             _warn_region_skipped(region_id)
+            log_progress("huawei", "region_catalog", "skipped", region=region_id)
             continue
 
         regions.append(region_id)
         all_zones.update(zone_ids)
         records.extend(region_records)
+        log_progress(
+            "huawei",
+            "region_catalog",
+            "completed",
+            region=region_id,
+            records=len(region_records),
+        )
 
     result = provider_result("huawei", records, regions, all_zones)
     result["skippedRegions"] = skipped_regions

@@ -78,6 +78,14 @@ def parse_args() -> argparse.Namespace:
         help="Touched when a provider raises an explicit error.",
     )
     parser.add_argument(
+        "--completion-marker",
+        type=Path,
+        help=(
+            "Append each provider slug after its validated checkpoint is written. "
+            "The caller owns marker lifecycle across retries."
+        ),
+    )
+    parser.add_argument(
         "--validate-only",
         type=Path,
         help="Validate an existing full catalog and exit without calling providers.",
@@ -268,6 +276,14 @@ def atomic_write(path: Path, value: dict[str, Any]) -> None:
     temporary.replace(path)
 
 
+def record_provider_completion(path: Path, slug: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(f"{slug}\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
 def write_step_summary(catalog: dict[str, Any]) -> None:
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
     if not summary_path:
@@ -334,6 +350,9 @@ def main() -> int:
         )
         return 0
 
+    if args.completion_marker and not args.checkpoint:
+        raise ValueError("--completion-marker requires --checkpoint")
+
     selected = tuple(args.providers or PROVIDER_SLUGS)
     fetched: dict[str, Any] = {}
     previous = load_catalog(args.previous) if args.previous else None
@@ -369,6 +388,8 @@ def main() -> int:
                         args.checkpoint,
                         build_catalog(providers, checkpoint_generated_at),
                     )
+                    if args.completion_marker:
+                        record_provider_completion(args.completion_marker, slug)
             except Exception as error:
                 failed = True
                 print(
@@ -392,6 +413,9 @@ def main() -> int:
     catalog = build_catalog(providers, generated_at)
     if args.checkpoint:
         atomic_write(args.checkpoint, catalog)
+        if args.completion_marker and not previous:
+            for slug in selected:
+                record_provider_completion(args.completion_marker, slug)
     atomic_write(args.output, catalog)
     atomic_write(args.public_output, catalog)
     write_step_summary(catalog)

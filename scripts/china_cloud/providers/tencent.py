@@ -9,6 +9,7 @@ from typing import Any
 from scripts.china_cloud.common import (
     format_packet_rate,
     integer,
+    log_progress,
     nonempty,
     number,
     provider_result,
@@ -254,6 +255,7 @@ def fetch() -> dict[str, Any]:
         "TENCENTCLOUD_SECRET_ID",
         "TENCENTCLOUD_SECRET_KEY",
     )
+    log_progress("tencent", "regions", "started")
     region_payload = _call(
         _make_region_client(secret_id, secret_key),
         "tencentcloud.region.v20220627.models",
@@ -270,30 +272,48 @@ def fetch() -> dict[str, Any]:
             if (region := str(item.get("Region") or "").strip())
         }
     )
+    log_progress("tencent", "regions", "completed", count=len(regions))
 
     all_zones: set[str] = set()
     records: list[dict[str, Any]] = []
     for region in regions:
+        region_record_start = len(records)
+        log_progress("tencent", "region_catalog", "started", region=region)
         client = _make_cvm_client(secret_id, secret_key, region)
+        log_progress("tencent", "zones", "started", region=region)
         zone_payload = _call(
             client,
             "tencentcloud.cvm.v20170312.models",
             "DescribeZonesRequest",
             "DescribeZones",
         )
-        all_zones.update(
+        region_zones = {
             zone
             for item in _items(zone_payload, "ZoneSet")
             if _available_or_unspecified(item, "ZoneState")
             if (zone := str(item.get("Zone") or "").strip())
+        }
+        all_zones.update(region_zones)
+        log_progress(
+            "tencent", "zones", "completed", region=region, count=len(region_zones)
         )
 
+        log_progress("tencent", "instance_types", "started", region=region)
         spec_payload = _call(
             client,
             "tencentcloud.cvm.v20170312.models",
             "DescribeInstanceTypeConfigsRequest",
             "DescribeInstanceTypeConfigs",
         )
+        specs = _items(spec_payload, "InstanceTypeConfigSet")
+        log_progress(
+            "tencent",
+            "instance_types",
+            "completed",
+            region=region,
+            count=len(specs),
+        )
+        log_progress("tencent", "availability_prices", "started", region=region)
         quota_payload = _call(
             client,
             "tencentcloud.cvm.v20170312.models",
@@ -306,9 +326,16 @@ def fetch() -> dict[str, Any]:
                 }
             ],
         )
-        specs = _items(spec_payload, "InstanceTypeConfigSet")
         quotas = _items(quota_payload, "InstanceTypeQuotaSet")
         regional_prices = _regional_on_demand_prices(quotas, region)
+        log_progress(
+            "tencent",
+            "availability_prices",
+            "completed",
+            region=region,
+            quotas=len(quotas),
+            priced_instance_types=len(regional_prices),
+        )
 
         quota_by_key: dict[tuple[str, str], dict[str, Any]] = {}
         quota_by_type: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -350,5 +377,13 @@ def fetch() -> dict[str, Any]:
                 if price := regional_prices.get(record["instanceType"]):
                     record["onDemandPrices"] = price
                 records.append(record)
+
+        log_progress(
+            "tencent",
+            "region_catalog",
+            "completed",
+            region=region,
+            records=len(records) - region_record_start,
+        )
 
     return provider_result("tencent", records, regions, all_zones)

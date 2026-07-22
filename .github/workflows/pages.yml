@@ -29,11 +29,11 @@ jobs:
         outputs:
             publish: ${{ steps.china_cloud_refresh.outputs.publish }}
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v6
 
             - name: Configure GitHub Pages
               id: pages
-              uses: actions/configure-pages@v5
+              uses: actions/configure-pages@v6
 
             - name: Identify tracked frontend content
               id: pages_shell_key
@@ -41,7 +41,7 @@ jobs:
 
             - name: Restore Pages shell for this frontend
               id: pages_shell
-              uses: actions/cache/restore@v4
+              uses: actions/cache/restore@v5
               with:
                   path: next/out
                   key: pages-shell-v2-${{ runner.os }}-${{ steps.pages_shell_key.outputs.tree }}
@@ -82,7 +82,7 @@ jobs:
                   test -s www/azure/instances.json
                   test -s www/gcp/instances.json
 
-            - uses: actions/setup-node@v4
+            - uses: actions/setup-node@v6
               if: github.event_name == 'push' || steps.pages_shell.outputs.cache-hit != 'true'
               with:
                   node-version-file: next/.nvmrc
@@ -122,19 +122,19 @@ jobs:
 
             - name: Save Pages shell for this frontend
               if: steps.pages_shell.outputs.cache-hit != 'true'
-              uses: actions/cache/save@v4
+              uses: actions/cache/save@v5
               with:
                   path: next/out
                   key: pages-shell-v2-${{ runner.os }}-${{ steps.pages_shell_key.outputs.tree }}
 
-            - uses: actions/setup-python@v5
+            - uses: actions/setup-python@v6
               id: setup_python
               with:
                   python-version: "3.12"
 
             - name: Restore China cloud SDK virtual environment
               id: china_cloud_venv
-              uses: actions/cache/restore@v4
+              uses: actions/cache/restore@v5
               with:
                   path: .venv-china-clouds
                   key: china-cloud-venv-v1-${{ runner.os }}-${{ steps.setup_python.outputs.python-version }}-${{ hashFiles('scripts/china_cloud/requirements.txt') }}
@@ -149,7 +149,7 @@ jobs:
 
             - name: Save China cloud SDK virtual environment
               if: steps.china_cloud_venv.outputs.cache-hit != 'true'
-              uses: actions/cache/save@v4
+              uses: actions/cache/save@v5
               with:
                   path: .venv-china-clouds
                   key: china-cloud-venv-v1-${{ runner.os }}-${{ steps.setup_python.outputs.python-version }}-${{ hashFiles('scripts/china_cloud/requirements.txt') }}
@@ -188,16 +188,19 @@ jobs:
               run: |
                   checkpoint=/tmp/china-clouds-checkpoint.json
                   failure_marker=/tmp/china-clouds-provider-failed
+                  completion_marker=/tmp/china-clouds-provider-completed
+                  : > "$completion_marker"
                   collector_args=(
                     --checkpoint "$checkpoint"
                     --failure-marker "$failure_marker"
+                    --completion-marker "$completion_marker"
                   )
                   if [ "${{ steps.previous_china_cloud_catalog.outputs.available }}" = "true" ]; then
                     collector_args+=(--previous /tmp/china-clouds-previous.json)
                   fi
 
                   status=0
-                  timeout --signal=TERM --kill-after=15s 180s \
+                  timeout --signal=TERM --kill-after=15s 120s \
                     .venv-china-clouds/bin/python -m scripts.update_china_clouds \
                     "${collector_args[@]}" \
                     || status=$?
@@ -206,7 +209,7 @@ jobs:
                      [ "${{ steps.previous_china_cloud_catalog.outputs.available }}" = "true" ] && \
                      [ ! -e "$failure_marker" ] && \
                      [ -s "$checkpoint" ] && \
-                     cmp -s /tmp/china-clouds-previous.json "$checkpoint"; then
+                     [ ! -s "$completion_marker" ]; then
                     echo "::warning title=China cloud refresh made no progress::Retrying all providers once with a 120-second budget."
                     status=0
                     timeout --signal=TERM --kill-after=15s 120s \
@@ -223,6 +226,10 @@ jobs:
                     if [ ! -s "$checkpoint" ]; then
                       echo "::error title=China cloud refresh timed out::No valid previous catalog or completed provider checkpoint is available."
                       exit "$status"
+                    fi
+                    if [ ! -s "$completion_marker" ]; then
+                      echo "::error title=China cloud refresh made no progress::Both attempts timed out before any provider completed; refusing to report a stale catalog as success."
+                      exit 1
                     fi
                     echo "::warning title=China cloud refresh timed out::Publishing only validated provider progress; unfinished providers retain their previous snapshot."
                   elif [ "$status" -ne 0 ]; then
@@ -247,7 +254,7 @@ jobs:
 
             - name: Upload China cloud data snapshot
               if: steps.china_cloud_refresh.outputs.publish == 'true'
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v6
               with:
                   name: china-cloud-catalog-${{ github.run_id }}
                   path: |
@@ -272,7 +279,7 @@ jobs:
 
             - name: Upload Pages artifact
               if: steps.china_cloud_refresh.outputs.publish == 'true'
-              uses: actions/upload-pages-artifact@v4
+              uses: actions/upload-pages-artifact@v5
               with:
                   path: next/out
 
@@ -287,4 +294,4 @@ jobs:
         steps:
             - name: Deploy
               id: deployment
-              uses: actions/deploy-pages@v4
+              uses: actions/deploy-pages@v5

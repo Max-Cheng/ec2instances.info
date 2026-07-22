@@ -74,6 +74,7 @@ class UpdateChinaCloudsTests(unittest.TestCase):
             previous=previous,
             checkpoint=root / "checkpoint.json",
             failure_marker=root / "provider-failed",
+            completion_marker=root / "provider-completed",
             validate_only=None,
         )
 
@@ -157,6 +158,10 @@ class UpdateChinaCloudsTests(unittest.TestCase):
             self.assertEqual(args.checkpoint.read_bytes(), args.output.read_bytes())
             self.assertEqual(args.checkpoint.read_bytes(), args.public_output.read_bytes())
             self.assertFalse(args.failure_marker.exists())
+            self.assertEqual(
+                set(args.completion_marker.read_text(encoding="utf-8").splitlines()),
+                set(update_china_clouds.PROVIDER_SLUGS),
+            )
 
     def test_explicit_provider_failure_marks_error_but_keeps_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -188,6 +193,10 @@ class UpdateChinaCloudsTests(unittest.TestCase):
                 "tencent.old",
             )
             self.assertTrue(args.failure_marker.exists())
+            self.assertEqual(
+                args.completion_marker.read_text(encoding="utf-8").splitlines(),
+                ["alibaba"],
+            )
             self.assertFalse(args.output.exists())
             self.assertFalse(args.public_output.exists())
 
@@ -207,8 +216,43 @@ class UpdateChinaCloudsTests(unittest.TestCase):
                 self.assertEqual(update_china_clouds.main(), 1)
 
             self.assertTrue(args.failure_marker.exists())
+            self.assertFalse(args.completion_marker.exists())
             self.assertFalse(args.checkpoint.exists())
             self.assertFalse(args.output.exists())
+
+    def test_completion_marker_appends_without_clearing_previous_attempt(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "provider-completed"
+            marker.write_text("volcengine\n", encoding="utf-8")
+
+            update_china_clouds.record_provider_completion(marker, "huawei")
+
+            self.assertEqual(
+                marker.read_text(encoding="utf-8").splitlines(),
+                ["volcengine", "huawei"],
+            )
+
+    def test_unchanged_provider_still_records_completion(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            previous_path = root / "previous.json"
+            self.write_catalog(previous_path, catalog())
+            args = self.args(root, previous_path)
+            args.providers = ["alibaba"]
+
+            with mock.patch.object(
+                update_china_clouds, "parse_args", return_value=args
+            ), mock.patch.object(
+                update_china_clouds,
+                "fetch_provider",
+                return_value=provider("alibaba", "old"),
+            ):
+                self.assertEqual(update_china_clouds.main(), 0)
+
+            self.assertEqual(
+                args.completion_marker.read_text(encoding="utf-8").splitlines(),
+                ["alibaba"],
+            )
 
     def test_worker_marks_explicit_failure_before_propagating(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

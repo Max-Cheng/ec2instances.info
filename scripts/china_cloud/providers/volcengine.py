@@ -8,6 +8,7 @@ from scripts.china_cloud.common import (
     family_from_instance_type,
     format_packet_rate,
     integer,
+    log_progress,
     normalize_architecture,
     number,
     provider_result,
@@ -334,27 +335,54 @@ def fetch() -> dict[str, Any]:
         BOOTSTRAP_REGION,
     )
 
+    log_progress("volcengine", "regions", "started")
     regions = _paginated_regions(bootstrap_client, ecs)
+    log_progress("volcengine", "regions", "completed", count=len(regions))
+    log_progress("volcengine", "instance_types", "started")
     specifications = _paginated_instance_types(bootstrap_client, ecs)
+    log_progress(
+        "volcengine", "instance_types", "completed", count=len(specifications)
+    )
     all_zones: set[str] = set()
     availability: dict[str, dict[str, set[str]]] = defaultdict(
         lambda: {"regions": set(), "zones": set()}
     )
 
     for region in regions:
+        log_progress("volcengine", "region_catalog", "started", region=region)
         client = (
             bootstrap_client
             if region == BOOTSTRAP_REGION
             else _client(core, ecs, access_key, secret_key, region)
         )
+        log_progress("volcengine", "zones", "started", region=region)
         region_zones = set(_zones(client, ecs))
+        log_progress(
+            "volcengine", "zones", "completed", region=region, count=len(region_zones)
+        )
+        log_progress("volcengine", "availability", "started", region=region)
         available, discovered_zones = _available_instance_types(client, ecs, region)
+        log_progress(
+            "volcengine",
+            "availability",
+            "completed",
+            region=region,
+            instance_types=len(available),
+            zones=len(discovered_zones),
+        )
         all_zones.update(region_zones)
         all_zones.update(discovered_zones)
 
         for instance_type, locations in available.items():
             availability[instance_type]["regions"].update(locations["regions"])
             availability[instance_type]["zones"].update(locations["zones"])
+        log_progress(
+            "volcengine",
+            "region_catalog",
+            "completed",
+            region=region,
+            instance_types=len(available),
+        )
 
     records = [
         _record(

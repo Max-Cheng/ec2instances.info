@@ -25,6 +25,25 @@ EMPTY_TEXT = {"", "unknown", "varies by instance type", "not published"}
 PRICE_CURRENCIES = {"CNY", "USD"}
 
 
+def log_progress(
+    provider: str,
+    stage: str,
+    status: str,
+    **details: Any,
+) -> None:
+    """Emit a compact, provider-scoped progress line for CI diagnostics."""
+
+    suffix = " ".join(
+        f"{key}={str(value).replace(' ', '_')}"
+        for key, value in sorted(details.items())
+    )
+    print(
+        f"{provider}: stage={stage} status={status}"
+        + (f" {suffix}" if suffix else ""),
+        flush=True,
+    )
+
+
 def require_env(*names: str) -> tuple[str, ...]:
     missing = [name for name in names if not os.environ.get(name)]
     if missing:

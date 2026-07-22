@@ -15,6 +15,7 @@ from typing import Any
 from scripts.china_cloud.common import (
     format_packet_rate,
     integer,
+    log_progress,
     nonempty,
     number,
     provider_result,
@@ -209,6 +210,9 @@ def _availability(
     all_zones: set[str] = set()
 
     def fetch_region(region_id: str) -> tuple[str, set[str], list[tuple[str, str]]]:
+        log_progress(
+            "alibaba", "region_availability", "started", region=region_id
+        )
         client = _make_client(access_key_id, access_key_secret, region_id)
         zone_payload = _invoke(
             client,
@@ -250,6 +254,14 @@ def _availability(
                     if not instance_type:
                         continue
                     stocked.append((instance_type, zone_id))
+        log_progress(
+            "alibaba",
+            "region_availability",
+            "completed",
+            region=region_id,
+            stocked=len(stocked),
+            zones=len(region_zones),
+        )
         return region_id, region_zones, stocked
 
     with ThreadPoolExecutor(
@@ -516,6 +528,7 @@ def fetch() -> dict[str, Any]:
         "ALIBABA_CLOUD_ACCESS_KEY_ID",
         "ALIBABA_CLOUD_ACCESS_KEY_SECRET",
     )
+    log_progress("alibaba", "regions", "started")
     bootstrap_client = _make_client(
         access_key_id, access_key_secret, BOOTSTRAP_REGION
     )
@@ -529,16 +542,38 @@ def fetch() -> dict[str, Any]:
             if (region_id := str(item.get("RegionId") or "").strip())
         }
     )
+    log_progress("alibaba", "regions", "completed", count=len(region_ids))
 
+    log_progress("alibaba", "instance_types", "started")
     specs = _fetch_instance_types(bootstrap_client)
+    log_progress("alibaba", "instance_types", "completed", count=len(specs))
+    log_progress(
+        "alibaba", "availability", "started", regions=len(region_ids)
+    )
     available, zones = _availability(
         access_key_id, access_key_secret, region_ids
+    )
+    log_progress(
+        "alibaba",
+        "availability",
+        "completed",
+        instance_types=len(available),
+        zones=len(zones),
+    )
+    log_progress(
+        "alibaba", "pricing", "started", instance_types=len(available)
     )
     on_demand_prices = _fetch_on_demand_prices(
         access_key_id,
         access_key_secret,
         available,
         cached_prices=_load_cached_prices(),
+    )
+    log_progress(
+        "alibaba",
+        "pricing",
+        "completed",
+        priced_instance_types=len(on_demand_prices),
     )
 
     records: list[dict[str, Any]] = []

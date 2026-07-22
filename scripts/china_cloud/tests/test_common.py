@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import io
 import unittest
+from contextlib import redirect_stdout
 
 from scripts.china_cloud.common import (
     classify_category,
     format_packet_rate,
+    log_progress,
     merge_instances,
     normalize_on_demand_prices,
     normalize_architecture,
@@ -12,6 +15,23 @@ from scripts.china_cloud.common import (
 
 
 class CommonTests(unittest.TestCase):
+    def test_progress_log_is_provider_scoped_and_machine_readable(self) -> None:
+        output = io.StringIO()
+        with redirect_stdout(output):
+            log_progress(
+                "tencent",
+                "availability_prices",
+                "completed",
+                region="ap-beijing",
+                priced_instance_types=42,
+            )
+
+        self.assertEqual(
+            output.getvalue(),
+            "tencent: stage=availability_prices status=completed "
+            "priced_instance_types=42 region=ap-beijing\n",
+        )
+
     def test_formats_packet_rates_with_readable_units(self) -> None:
         self.assertEqual(format_packet_rate(300_000), "300 Kpps")
         self.assertEqual(format_packet_rate(1_200_000), "1.2 Mpps")

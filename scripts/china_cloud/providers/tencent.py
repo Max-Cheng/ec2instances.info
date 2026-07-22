@@ -287,14 +287,9 @@ def _regional_subscription_prices(
 ) -> dict[str, dict[str, dict[str, str]]]:
     lowest_by_type: dict[str, Decimal] = {}
     for quota in quotas:
-        charge_type = str(quota.get("InstanceChargeType") or "").strip().upper()
-        # Tencent includes OriginalPriceOneYear in the normal postpaid catalog
-        # response as well as the prepaid response. Reuse that public field to
-        # avoid another slow full-catalog call for every region.
-        if (
-            not _is_sellable(quota)
-            or charge_type not in {"", "PREPAID", "POSTPAID_BY_HOUR"}
-        ):
+        # OriginalPriceOneYear is the public one-year prepaid list total. Never
+        # use DiscountPriceOneYear, which may include account-specific terms.
+        if not _is_sellable(quota) or not _matches_charge_type(quota, "PREPAID"):
             continue
         instance_type = str(quota.get("InstanceType") or "").strip()
         total = _public_one_year_subscription_total(quota)
@@ -357,9 +352,10 @@ def _regional_spot_prices(
 def _fetch_charge_type_quotas(
     client: Any,
     region: str,
-    charge_type: str,
+    charge_types: str | tuple[str, ...],
 ) -> list[dict[str, Any]]:
-    stage = "subscription_prices" if charge_type == "PREPAID" else "spot_prices"
+    values = [charge_types] if isinstance(charge_types, str) else list(charge_types)
+    stage = "optional_prices" if len(values) > 1 else f"{values[0].lower()}_prices"
     log_progress("tencent", stage, "started", region=region)
     try:
         payload = _call(
@@ -370,7 +366,7 @@ def _fetch_charge_type_quotas(
             Filters=[
                 {
                     "Name": "instance-charge-type",
-                    "Values": [charge_type],
+                    "Values": values,
                 }
             ],
         )
@@ -478,7 +474,7 @@ def fetch() -> dict[str, Any]:
     records: list[dict[str, Any]] = []
     subscription_prices: dict[str, dict[str, dict[str, str]]] = {}
     spot_prices: dict[str, dict[str, dict[str, str]]] = {}
-    spot_price_regions: list[str] = []
+    optional_price_regions: list[str] = []
     for region in regions:
         region_record_start = len(records)
         log_progress("tencent", "region_catalog", "started", region=region)
@@ -544,11 +540,7 @@ def fetch() -> dict[str, Any]:
         # after the API has explicitly echoed the POSTPAID_BY_HOUR filter; this
         # avoids interpreting ambiguous legacy responses as public catalog data.
         if _declares_charge_type(quotas, "POSTPAID_BY_HOUR"):
-            _merge_region_prices(
-                subscription_prices,
-                _regional_subscription_prices(quotas, region),
-            )
-            spot_price_regions.append(region)
+            optional_price_regions.append(region)
         else:
             log_progress(
                 "tencent",
@@ -608,56 +600,74 @@ def fetch() -> dict[str, Any]:
         )
 
     # The base Tencent catalog is already a relatively slow sequential scan.
-    # Fetch the one remaining optional billing mode in parallel with separate
-    # regional clients so the Pages workflow stays inside its 120-second guard.
-    if spot_price_regions:
+    # Fetch PREPAID and SPOTPAID together in one filtered request per region.
+    # This preserves the same request count as spot-only enrichment while
+    # keeping the slow base scan inside the Pages workflow's 120-second guard.
+    if optional_price_regions:
         log_progress(
             "tencent",
-            "spot_price_enrichment",
+            "optional_price_enrichment",
             "started",
-            regions=len(spot_price_regions),
-            workers=min(OPTIONAL_PRICE_WORKERS, len(spot_price_regions)),
+            regions=len(optional_price_regions),
+            workers=min(OPTIONAL_PRICE_WORKERS, len(optional_price_regions)),
         )
 
-        def fetch_region_spot_prices(
+        def fetch_region_optional_prices(
             region: str,
-        ) -> dict[str, dict[str, dict[str, str]]]:
+        ) -> tuple[
+            dict[str, dict[str, dict[str, str]]],
+            dict[str, dict[str, dict[str, str]]],
+        ]:
             client = _make_cvm_client(
                 secret_id,
                 secret_key,
                 region,
                 request_timeout_seconds=OPTIONAL_PRICE_REQUEST_TIMEOUT_SECONDS,
             )
-            quotas = _fetch_charge_type_quotas(client, region, "SPOTPAID")
-            return _regional_spot_prices(quotas, region)
+            quotas = _fetch_charge_type_quotas(
+                client,
+                region,
+                ("PREPAID", "SPOTPAID"),
+            )
+            return (
+                _regional_subscription_prices(quotas, region),
+                _regional_spot_prices(quotas, region),
+            )
 
         with ThreadPoolExecutor(
-            max_workers=min(OPTIONAL_PRICE_WORKERS, len(spot_price_regions))
+            max_workers=min(OPTIONAL_PRICE_WORKERS, len(optional_price_regions))
         ) as executor:
             futures = {
-                executor.submit(fetch_region_spot_prices, region): region
-                for region in spot_price_regions
+                executor.submit(fetch_region_optional_prices, region): region
+                for region in optional_price_regions
             }
             for future in as_completed(futures):
                 region = futures[future]
                 try:
-                    regional_spot_prices = future.result()
+                    regional_subscription_prices, regional_spot_prices = (
+                        future.result()
+                    )
                 except Exception as error:
                     log_progress(
                         "tencent",
-                        "spot_prices",
+                        "optional_prices",
                         "failed",
                         region=region,
                         error=error.__class__.__name__,
                     )
                     continue
+                _merge_region_prices(
+                    subscription_prices,
+                    regional_subscription_prices,
+                )
                 _merge_region_prices(spot_prices, regional_spot_prices)
         log_progress(
             "tencent",
-            "spot_price_enrichment",
+            "optional_price_enrichment",
             "completed",
-            priced_instance_types=len(spot_prices),
-            regions=len(spot_price_regions),
+            regions=len(optional_price_regions),
+            spot_priced_instance_types=len(spot_prices),
+            subscription_priced_instance_types=len(subscription_prices),
         )
 
     result = provider_result("tencent", records, regions, all_zones)

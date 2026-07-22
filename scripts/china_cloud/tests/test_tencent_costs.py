@@ -81,7 +81,7 @@ class TencentCostExtractionTests(unittest.TestCase):
             ],
             "ap-test",
         )
-        self.assertEqual(postpaid_prices, prices)
+        self.assertEqual(postpaid_prices, {})
 
     def test_spot_uses_lowest_public_hourly_price_and_reports_zone(self) -> None:
         prices = tencent._regional_spot_prices(
@@ -149,7 +149,7 @@ class TencentCostFetchTests(unittest.TestCase):
     def test_fetch_requests_each_public_charge_type_and_emits_region_maps(
         self,
     ) -> None:
-        charge_type_calls: list[str] = []
+        charge_type_calls: list[tuple[str, ...]] = []
 
         def fake_call(
             client: object,
@@ -186,14 +186,13 @@ class TencentCostFetchTests(unittest.TestCase):
             if method == "DescribeZoneInstanceConfigInfos":
                 filters = parameters["Filters"]
                 self.assertIsInstance(filters, list)
-                charge_type = filters[0]["Values"][0]  # type: ignore[index]
-                charge_type_calls.append(charge_type)
-                price = {
+                charge_types = tuple(filters[0]["Values"])  # type: ignore[index]
+                charge_type_calls.append(charge_types)
+                prices = {
                     "POSTPAID_BY_HOUR": {
                         "UnitPrice": 0.4,
                         "UnitPriceDiscount": 0.2,
                         "ChargeUnit": "HOUR",
-                        "OriginalPriceOneYear": 876,
                     },
                     "PREPAID": {
                         "OriginalPriceOneYear": 876,
@@ -204,7 +203,7 @@ class TencentCostFetchTests(unittest.TestCase):
                         "UnitPriceDiscount": 0.001,
                         "ChargeUnit": "HOUR",
                     },
-                }[charge_type]
+                }
                 return {
                     "InstanceTypeQuotaSet": [
                         {
@@ -217,8 +216,9 @@ class TencentCostFetchTests(unittest.TestCase):
                             "Status": "SELL",
                             "StatusCategory": "EnoughStock",
                             "InstanceChargeType": charge_type,
-                            "Price": price,
+                            "Price": prices[charge_type],
                         }
+                        for charge_type in charge_types
                     ]
                 }
             self.fail(f"unexpected Tencent method: {method}")
@@ -233,7 +233,7 @@ class TencentCostFetchTests(unittest.TestCase):
 
         self.assertEqual(
             charge_type_calls,
-            ["POSTPAID_BY_HOUR", "SPOTPAID"],
+            [("POSTPAID_BY_HOUR",), ("PREPAID", "SPOTPAID")],
         )
         instance = result["instances"][0]
         self.assertEqual(

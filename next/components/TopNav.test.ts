@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, vi } from "vitest";
+import { afterAll, expect, vi } from "vitest";
 import componentTests from "@/utils/testing/componentTests";
 import TopNav from "./TopNav";
 import { RenderResult } from "@testing-library/react";
@@ -86,13 +86,11 @@ function runSelectedTest(pathLitUp: string) {
     };
 }
 
-let mockPath = "/";
+const mockNavigation = vi.hoisted(() => ({ path: "/" }));
 
-beforeAll(() => {
-    vi.mock("next/navigation", () => ({
-        usePathname: vi.fn().mockImplementation(() => mockPath),
-    }));
-});
+vi.mock("next/navigation", () => ({
+    usePathname: vi.fn().mockImplementation(() => mockNavigation.path),
+}));
 
 afterAll(() => {
     vi.clearAllMocks();
@@ -107,7 +105,7 @@ componentTests(
             props: {},
             patch: {
                 before: () => {
-                    mockPath = "/";
+                    mockNavigation.path = "/";
                 },
             },
             test: runSelectedTest("/"),
@@ -117,7 +115,7 @@ componentTests(
             props: {},
             patch: {
                 before: () => {
-                    mockPath = "/aws/ec2/123";
+                    mockNavigation.path = "/aws/ec2/123";
                 },
             },
             test: runSelectedTest("/"),
@@ -130,7 +128,7 @@ componentTests(
             props: {},
             patch: {
                 before: () => {
-                    mockPath = "/rds";
+                    mockNavigation.path = "/rds";
                 },
             },
             test: runSelectedTest("/rds"),
@@ -140,7 +138,7 @@ componentTests(
             props: {},
             patch: {
                 before: () => {
-                    mockPath = "/aws/rds/123";
+                    mockNavigation.path = "/aws/rds/123";
                 },
             },
             test: runSelectedTest("/rds"),
@@ -153,7 +151,7 @@ componentTests(
             props: {},
             patch: {
                 before: () => {
-                    mockPath = "/cache";
+                    mockNavigation.path = "/cache";
                 },
             },
             test: runSelectedTest("/cache"),
@@ -163,7 +161,7 @@ componentTests(
             props: {},
             patch: {
                 before: () => {
-                    mockPath = "/aws/elasticache/123";
+                    mockNavigation.path = "/aws/elasticache/123";
                 },
             },
             test: runSelectedTest("/cache"),
@@ -176,7 +174,7 @@ componentTests(
             props: {},
             patch: {
                 before: () => {
-                    mockPath = "/redshift";
+                    mockNavigation.path = "/redshift";
                 },
             },
             test: runSelectedTest("/redshift"),
@@ -186,7 +184,7 @@ componentTests(
             props: {},
             patch: {
                 before: () => {
-                    mockPath = "/aws/redshift/123";
+                    mockNavigation.path = "/aws/redshift/123";
                 },
             },
             test: runSelectedTest("/redshift"),
@@ -199,7 +197,7 @@ componentTests(
             props: {},
             patch: {
                 before: () => {
-                    mockPath = "/opensearch";
+                    mockNavigation.path = "/opensearch";
                 },
             },
             test: runSelectedTest("/opensearch"),
@@ -209,7 +207,7 @@ componentTests(
             props: {},
             patch: {
                 before: () => {
-                    mockPath = "/aws/opensearch/123";
+                    mockNavigation.path = "/aws/opensearch/123";
                 },
             },
             test: runSelectedTest("/opensearch"),
@@ -222,7 +220,7 @@ componentTests(
             props: {},
             patch: {
                 before: () => {
-                    mockPath = "/azure";
+                    mockNavigation.path = "/azure";
                 },
             },
             test: runSelectedTest("/azure"),
@@ -232,7 +230,7 @@ componentTests(
             props: {},
             patch: {
                 before: () => {
-                    mockPath = "/azure/vm/123";
+                    mockNavigation.path = "/azure/vm/123";
                 },
             },
             test: runSelectedTest("/azure"),
@@ -245,7 +243,7 @@ componentTests(
             props: {},
             patch: {
                 before: () => {
-                    mockPath = "/gcp";
+                    mockNavigation.path = "/gcp";
                 },
             },
             test: runSelectedTest("/gcp"),
@@ -255,7 +253,7 @@ componentTests(
             props: {},
             patch: {
                 before: () => {
-                    mockPath = "/gcp/123";
+                    mockNavigation.path = "/gcp/123";
                 },
             },
             test: runSelectedTest("/gcp"),
@@ -268,7 +266,7 @@ componentTests(
             props: {},
             patch: {
                 before: () => {
-                    mockPath = path;
+                    mockNavigation.path = path;
                 },
             },
             test: runSelectedTest(path),
